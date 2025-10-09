@@ -13,7 +13,7 @@ onMounted(() => {
 
 const initDatabase = () => {
   console.log('=> Connexion à la base de donnes');
-  const db = new PouchDB('http://elia:admin@localhost:5984/')
+  const db = new PouchDB('http://elia:admin@localhost:5984/infradon2')
   if (db) {
     console.log("Connected to collection : " + db?.name)
     storage.value = db
