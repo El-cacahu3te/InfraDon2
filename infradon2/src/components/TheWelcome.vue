@@ -19,7 +19,7 @@ const documentContent = ref('')
 const storage = ref()
 const postsData = ref<Post[]>([])
 
-// ADD THIS: Simple boolean to show/hide the message
+// show or hide message when DB is synced
 const showSyncMessage = ref(false)
 
 const initDatabase = () => {
@@ -42,7 +42,6 @@ const initDatabase = () => {
   }
 }
 
-// FIXED THIS FUNCTION:
 const syncDatabase = () => {
   storage.value.replicate  // Removed v-if (that's only for template!)
     .to('http://elia:admin@localhost:5984/infradon2')
@@ -134,17 +133,15 @@ onMounted(() => {
   initDatabase()
 })
 
-// REMOVED THIS - we don't need it anymore
-// const validateMessage = () => {""}
 </script>
 
 <template>
   <h1>Fetch Data</h1>
 
-  <!-- FIXED: Removed duplicate @click -->
+
   <button @click="syncDatabase">Rafraîchir les données</button>
 
-  <!-- ADD THIS: The message that appears when synced -->
+
   <p v-if="showSyncMessage" style="color: green; font-weight: bold;">
     ✓ DataBase syncronisé
   </p>
