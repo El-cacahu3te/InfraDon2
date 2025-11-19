@@ -140,8 +140,8 @@ onMounted(() => {
 
 
   <button @click="syncDatabase">Rafraîchir les données</button>
-  <button @click="syncDatabase">Mettre off line</button> 
-  <button @click="syncDatabase">Remettre on line</button> 
+
+
   <p v-if="showSyncMessage" style="color: green; font-weight: bold;">
     ✓ DataBase syncronisé
   </p>
