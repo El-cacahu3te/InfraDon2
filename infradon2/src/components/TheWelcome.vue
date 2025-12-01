@@ -4,9 +4,7 @@ import PouchDB from 'pouchdb';
 import PouchDBFind from 'pouchdb-find';
 PouchDB.plugin(PouchDBFind);
 
-
-// on dirait que le declare ne sert a rien
-declare interface Post {
+interface Post {
   _id: string
   _rev: string
   post_name: string
@@ -29,9 +27,10 @@ const showSyncMessage = ref(false)
 const isOffline = ref(false)
 const selectedConflict = ref<any>(null)
 const otherVersions = ref<any[]>([])
-const buttonName = ref(window.navigator.onLine ? 'En ligne' : 'Hors ligne')
+const buttonName = ref("En ligne")
+const searchTerm = ref('');
 
-let syncHandler: any = null // Pour gérer la synchronisation live
+let syncHandler: any = null
 
 //Initialisation de la base locale et réplication initiale
 const initDatabase = () => {
@@ -45,17 +44,16 @@ const initDatabase = () => {
     .then(() => fetchData())
     .catch(err => console.error('Erreur réplication initiale:', err))
   
-storage.value.createIndex({
-  index: { fields: ['post_name'] }
-}).then(() => {
-  console.log('Index créé sur post_name');
-});
-
+  storage.value.createIndex({
+    index: { fields: ['post_name'] }
+  }).then(() => {
+    console.log('Index créé sur post_name');
+  });
 }
 
 // Rafraîchir (réplication ponctuelle)
 const syncDatabase = () => {
-  PouchDB.sync(storage.value, 'http://elia:admin@localhost:5984/infradon2') //récupère la db en ligne juste 1 fois 
+  PouchDB.sync(storage.value, 'http://elia:admin@localhost:5984/infradon2')
     .then(() => {
       fetchData()
       showSyncMessage.value = true
@@ -76,11 +74,19 @@ const toggleOffline = () => {
       console.log('Mode OFFLINE activé')
     }
   } else {
-    // Restart live sync
-    syncHandler = PouchDB.sync(storage.value, 'http://elia:admin@localhost:5984/infradon2', {
+    // Restart live sync SANS résolution automatique
+    syncHandler = storage.value.sync('http://elia:admin@localhost:5984/infradon2', {
       live: true,
       retry: true
-    }).on('change', fetchData)
+    })
+    .on('change', (info) => {
+      console.log('Changement détecté:', info);
+      fetchData(); // Rafraîchit pour voir les conflits
+    })
+    .on('error', (err) => {
+      console.error('Erreur sync:', err);
+    });
+    
     console.log('Mode ONLINE activé')
   }
 }
@@ -88,74 +94,71 @@ const toggleOffline = () => {
 // Récupérer les données
 const fetchData = () => {
   storage.value
-    .allDocs({ include_docs: true, conflicts: true }) //include_docs pour obtenir les documents complets + annonce les conflits 
+    .allDocs({ include_docs: true, conflicts: true })
     .then((result: any) => {
       postsData.value = result.rows
-        .map((row: any) => row.doc) //done un tableau des documents complets
-        .filter(doc => !doc._id.startsWith('_')) // Exclure les documents systèmes
-      console.log(postsData.value); // regarde si certains ont des conflits 
-
+        .map((row: any) => row.doc)
+        .filter(doc => !doc._id.startsWith('_'))
+      
+      console.log('Documents avec conflits:', postsData.value.filter(p => p._conflicts));
       documentNewName.value = postsData.value.map(post => post.post_name)
     })
-
-    .catch(err => console.error('Erreur récupération:',))
+    .catch(err => console.error('Erreur récupération:', err))
 }
 
-//résoudre conflit 
+// Résoudre conflit 
 const resolveConflict = async (id: string) => {
-  // Récupère le document avec ses conflits
-  const doc = await storage.value.get(id, { conflicts: true, revs: true });
+  const doc = await storage.value.get(id, { conflicts: true });
   console.log('Version active:', doc);
-  console.log('Révisions en conflit:', doc._conflicts); //tableau de conflits 
-  selectedConflict.value = doc; //stock document actif
-otherVersions.value = [];
-for (const rev of doc._conflicts) {
-  const otherDoc = await storage.value.get(id, { rev });
-  otherVersions.value.push(otherDoc);
-} 
-selectedConflict.value = null;
-otherVersions.value = [];
-
+  console.log('Révisions en conflit:', doc._conflicts);
+  
+  selectedConflict.value = doc;
+  otherVersions.value = [];
+  
+  for (const rev of doc._conflicts) {
+    const otherDoc = await storage.value.get(id, { rev });
+    otherVersions.value.push(otherDoc);
+  }
 };
 
-
 const keepLocal = async () => {
+  // Supprimer toutes les versions en conflit
   for (const rev of selectedConflict.value._conflicts) {
     await storage.value.remove(selectedConflict.value._id, rev);
   }
   fetchData();
-  
-selectedConflict.value = null;
-otherVersions.value = [];
-
+  selectedConflict.value = null;
+  otherVersions.value = [];
 };
 
 const keepRemote = async (index: number) => {
-const idx = index;
-await storage.value.put(otherVersions.value[idx]);
-for (const rev of selectedConflict.value._conflicts) {
-  if (rev !== otherVersions.value[idx]._rev) {
+  const chosenVersion = otherVersions.value[index];
+  
+  // Mettre à jour avec la version distante qui est recréer en local 
+  const  newDoc = {
+    ...selectedConflict.value, //sturcture local
+    post_name: chosenVersion.post_name,//contenu distant
+    post_content: chosenVersion.post_content,
+    likes: chosenVersion.likes,
+    comments: chosenVersion.comments,
+  };
+  await storage.value.put(newDoc);
+  for (const rev of selectedConflict.value._conflicts) {
     await storage.value.remove(selectedConflict.value._id, rev);
-  }
-}
-fetchData();
-
-selectedConflict.value = null;
-otherVersions.value = [];
-
+  } //supprimer les autres versions en conflit
+  
+  fetchData();
+  selectedConflict.value = null;
+  otherVersions.value = [];
 };
 
-const mergeVersions = async () => { 
-const idx = 0; // Exemple : fusionner avec la première version distante
-const mergedContent = selectedConflict.value.post_content + ' | ' + otherVersions.value[idx].post_content;
-await storage.value.put({ ...selectedConflict.value, post_content: mergedContent });
-for (const rev of selectedConflict.value._conflicts) {
-  await storage.value.remove(selectedConflict.value._id, rev);
-}
-fetchData();
 
+const searchPosts = async (term: string) => {
+  const result = await storage.value.find({
+    selector: { post_name: { $regex: term } }
+  });
+  postsData.value = result.docs;
 };
-
 
 // Ajouter un document
 const addDocument = () => {
@@ -166,7 +169,10 @@ const addDocument = () => {
       likes: 0,
       comments: []
     })
-    .then(() => fetchData())
+    .then(() => {
+      documentName.value = '';
+      fetchData();
+    })
     .catch(err => console.log(err))
 }
 
@@ -206,6 +212,11 @@ const generateFactory = () => {
   storage.value.bulkDocs(docs).then(() => fetchData())
 }
 
+const cancelConflictResolution = () => {
+  selectedConflict.value = null;
+  otherVersions.value = [];
+}
+
 onMounted(() => {
   console.log('=> Composant initialisé')
   initDatabase()
@@ -215,53 +226,78 @@ onMounted(() => {
 <template>
   <h1>Gestion des données</h1>
 
-  <!-- Boutons -->
-  <button @click="syncDatabase">Rafraîchir les données</button>
-  <button @click="toggleOffline">{{ buttonName }}</button>
+  <!-- Boutons de contrôle -->
+  <div style="margin-bottom: 20px;">
+    <button @click="syncDatabase">Rafraîchir les données</button>
+    <button @click="toggleOffline">Vous êtes: {{ buttonName }}</button>
+    <button @click="addDocument">Ajouter un document</button>
+    <input v-model="documentName" placeholder="Nom du document" />
+    <button @click="generateFactory">Générer 50 documents</button>
+  </div>
+
   <p v-if="showSyncMessage" style="color: green; font-weight: bold;">
     ✓ Base synchronisée
   </p>
-  
-<article v-for="(post, index) in postsData" :key="post._id">
-  <h2>{{ post.post_name }}</h2>
-  <p>{{ post.post_content }}</p>
 
-<!-- Zone d'affichage des versions en conflit -->
-<div v-if="selectedConflict">
-  <h3>Résolution du conflit pour {{ selectedConflict._id }}</h3>
-  <br></br>
+  <!-- Zone de résolution des conflits -->
+  <div v-if="selectedConflict" style="border: 2px solid red; padding: 20px; margin: 20px 0;">
+    <h3>⚠️ Résolution du conflit pour {{ selectedConflict._id }}</h3>
+    
+    <div style="background: #f0f0f0; padding: 10px; margin: 10px 0;">
+      <h4>Version locale (actuelle)</h4>
+      <p><strong>Nom:</strong> {{ selectedConflict.post_name }}</p>
+      <p><strong>Contenu:</strong> {{ selectedConflict.post_content }}</p>
+      <button @click="keepLocal()">Garder la version locale</button>
+    </div>
 
-  <!-- Ajout document -->
-  <button @click="addDocument">Ajouter un document</button>
-  <input v-model="documentName" placeholder="Nom du document" />
-  <br></br>
-  <button @click="generateFactory">Générer 50 documents</button>
- //gestion des conflits
-   <div>
-    <h4>Version locale</h4>
-    <p>{{ selectedConflict.post_content }}</p>
-    <button @click="keepLocal()">Garder locale</button>
+    <div v-for="(version, idx) in otherVersions" :key="idx" 
+         style="background: #fff0f0; padding: 10px; margin: 10px 0;">
+      <h4>Version distante {{ idx + 1 }}</h4>
+      <p><strong>Nom:</strong> {{ version.post_name }}</p>
+      <p><strong>Contenu:</strong> {{ version.post_content }}</p>
+      <button @click="keepRemote(idx)">Garder cette version</button>
+    </div>
+
+    <button @click="cancelConflictResolution" style="margin-top: 10px;">Annuler</button>
   </div>
 
-  <!-- Autres versions -->
-  <div v-for="(version, idx) in otherVersions" :key="idx">
-    <h4>Version distante {{ idx + 1 }}</h4>
-    <p>{{ version.post_content }}</p>
-    <button @click="keepRemote(idx)">Garder cette version</button>
-  </div>
-
-  
- <div>
-    <button @click="mergeVersions()">Fusionner</button>
-  </div>
-</div>
   <!-- Liste des documents -->
-  <article v-for="(post, index) in postsData" :key="post._id">
-    <h2>{{ post.post_name }}</h2>
-    <p>{{ post.post_content }}</p>
-    <p>ID: {{ post._id }}</p>
-    <input v-model="documentNewName[index]" placeholder="Nouveau nom" />
-    <button @click="updateDocument(post._id, post._rev, index)">Modifier</button>
-    <button @click="deleteDocument(post._id, post._rev)">Supprimer</button>
-  </article>
+  <div v-if="!selectedConflict">
+    <h2>Documents ({{ postsData.length }})</h2>
+    
+    <article v-for="(post, index) in postsData" :key="post._id" 
+             style="border: 1px solid #ccc; padding: 10px; margin: 10px 0;">
+      <div v-if="post._conflicts" style="background: #ffebee; padding: 5px; margin-bottom: 10px;">
+        <span style="color:red; font-weight: bold;">⚠️ Conflit détecté ({{ post._conflicts.length }} version(s))</span>
+        <button @click="resolveConflict(post._id)" style="margin-left: 10px;">Voir les versions</button>
+      </div>
+
+      <h3>{{ post.post_name }}</h3>
+      <p>{{ post.post_content }}</p>
+      <p style="font-size: 0.8em; color: #666;">ID: {{ post._id }}</p>
+      
+      <div style="margin-top: 10px;">
+        <input v-model="documentNewName[index]" placeholder="Nouveau nom" />
+        <button @click="updateDocument(post._id, post._rev, index)">Modifier</button>
+        <button @click="deleteDocument(post._id, post._rev)">Supprimer</button>
+      </div>
+    </article>
+  </div>
 </template>
+
+<style scoped>
+button {
+  margin: 5px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+input {
+  margin: 5px;
+  padding: 8px;
+}
+
+article {
+  border-radius: 4px;
+}
+</style>
