@@ -9,7 +9,7 @@ interface Post {
   _rev?: string
   post_name: string
   post_content: string
-  total_likes?: number //counter des total_likes
+  total_likes?: number //counter 
   comments?: string[]
   attributes?: {
     creation_date: any
@@ -21,10 +21,10 @@ interface Post {
 interface Reaction {
   _id: string;           //  reaction_postId
   _rev?: string;         // révision
-  user_id: string;      // id de l'utilisateur
+  user_id: string;      
   post_id: string;       // lien vers le post
-  isliked: boolean;        // true si isliked
-  comments: string[];    // tableau de commentaires
+  isliked: boolean;       
+  comments: string[];    
 }
 
 
@@ -45,7 +45,7 @@ const reactionsData = ref<Reaction[]>([]);
 
 let syncHandler: any = null
 
-//Initialisation de la base locale et réplication initiale
+//Initialisation db et réplication initiale
 const initDatabase = () => {
   console.log('=> Connexion à la base locale')
   const db = new PouchDB('collection_infradon2')
@@ -219,8 +219,8 @@ const getTopLikedPosts = async () => {
       selector: {
         total_likes: { $gte: 0 }  // Tous les posts avec des likes >= 0
       },
-      sort: [{ total_likes: 'desc' }],  // Trier par ordre décroissant
-      limit: 10  // Limite à 10 résultats
+      sort: [{ total_likes: 'desc' }], 
+      limit: 10  
     });
     
     postsData.value = result.docs.filter(doc => !doc._id.startsWith('reaction_'));
@@ -230,7 +230,7 @@ const getTopLikedPosts = async () => {
   }
 };
 
-// Ajouter un document
+
 const addDocument = () => {
   storage.value
     .post({
@@ -246,7 +246,7 @@ const addDocument = () => {
     .catch(err => console.log(err))
 }
 
-// Modifier un document
+
 const updateDocument = (post_id: string, post_rev: string, index: number) => {
   storage.value
     .put({
@@ -259,7 +259,7 @@ const updateDocument = (post_id: string, post_rev: string, index: number) => {
     .catch(err => console.log(err))
 }
 
-//Supprimer un document
+
 const deleteDocument = (post_id: string, post_rev: string) => {
   storage.value
     .remove(post_id, post_rev)
@@ -317,7 +317,7 @@ const addReaction = async (post_id: string, comment?: string, isliked?: boolean)
       await storage.value.put(newReaction);
     }
 
-    newComment.value = '';   // reste le champ commentaire
+    newComment.value = '';   // reset le champ commentaire
     fetchData();
   } catch (err) {
     console.error('Erreur ajout réaction:', err);
@@ -337,7 +337,7 @@ const cleanReaction = async (post_id: string) => {
   }
 };
 
-// Version synchrone pour le template (cherche dans reactionsData déjà chargé)
+
 const getReactionForPost = (post_id: string) => {
   return reactionsData.value.find(r => r.post_id === post_id && r.user_id === 'user_1') || null;
 };
@@ -346,7 +346,7 @@ const getReactionForPost = (post_id: string) => {
 const deleteComment = async (post_id: string, comment: string) => {
   try {
     const reaction = getReactionForPost(post_id);
-    if (reaction && reaction._rev) {
+    if (reaction && reaction._rev) { // Assure que la réaction existe
       const updatedReaction = {
         ...reaction,
         comments: reaction.comments.filter(c => c !== comment)
