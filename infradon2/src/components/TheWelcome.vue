@@ -9,7 +9,7 @@ interface Post {
   _rev?: string
   post_name: string
   post_content: string
-  total_likes?: number //counter des likes
+  total_likes?: number //counter des total_likes
   comments?: string[]
   attributes?: {
     creation_date: any
@@ -169,7 +169,7 @@ const keepRemote = async (index: number) => {
     ...selectedConflict.value, //sturcture local
     post_name: chosenVersion.post_name,//contenu distant
     post_content: chosenVersion.post_content,
-    likes: chosenVersion.likes,
+    total_likes: chosenVersion.total_likes,
     comments: chosenVersion.comments,
   };
   await storage.value.put(newDoc);
@@ -211,7 +211,7 @@ const addDocument = () => {
     .post({
       post_name: documentName.value,
       post_content: 'blabla',
-      likes: 0,
+      total_likes: 0,
       comments: []
     })
     .then(() => {
@@ -250,7 +250,7 @@ const generateFactory = () => {
       _id: 'doc_' + i + '_' + Date.now(),
       post_name: 'Post ' + i,
       post_content: 'Contenu aléatoire ' + Math.random().toString(36).substring(7),
-      likes: Math.floor(Math.random() * 100),
+      total_likes: Math.floor(Math.random() * 100),
       comments: []
     })
   }
@@ -315,23 +315,13 @@ const cleanReaction = async (post_id: string) => {
 // Version synchrone pour le template (cherche dans reactionsData déjà chargé)
 const getReactionForPost = (post_id: string) => {
   return reactionsData.value.find(r => r.post_id === post_id && r.user_id === 'user_1') || null;
-}
-const reactionForPost = async (post_id: string) => { // Renvoie la réaction pour un post donné
-  try {
-    const result = await storage.value.find({
-      selector: { post_id: post_id, user_id: 'user_1' }
-    });
-    return result.docs.length > 0 ? result.docs[0] : null; // Retourne une réaction vide si aucune n'existe
-  } catch (err) {
-    console.error('Erreur récupération réaction:', err);
-    return null;
-  }
 };
+
 
   onMounted(() => {
     console.log('=> Composant initialisé')
     initDatabase()
-  })
+  }); 
 </script>
 
 <template>
@@ -378,34 +368,33 @@ const reactionForPost = async (post_id: string) => { // Renvoie la réaction pou
     <article v-for="(post, index) in postsData" :key="post._id"
       style="border: 1px solid #ccc; padding: 10px; margin: 10px 0;">
 
+      <!-- Section réactions -->
       <div>
-        <button @click="addReaction(post._id, null, true)">👍 isliked</button>
+        <button @click="addReaction(post._id, undefined, true)">👍 Like</button>
         <input v-model="newComment" placeholder="Ajouter un commentaire" />
         <button @click="addReaction(post._id, newComment)">Commenter</button>
       </div>
 
-      <p v-if="getReactionForPost(post._id)">
-        Likes: {{ getReactionForPost(post._id).isliked ? 'Oui' : 'Non' }}
-      </p>
-      <p v-if="getReactionForPost(post._id) && getReactionForPost(post._id).comments.length">
-        Premier commentaire: {{ getReactionForPost(post._id).comments[0] }}
-      </p>
-      <p v-if="reactionForPost(post._id).comments.length">Premier commentaire: {{ reactionForPost(post._id).comments[0]
-      }}</p>
-      <p v-if="reactionForPost(post._id) && reactionForPost(post._id).comments.length">
-        Premier commentaire: {{ reactionForPost(post._id).comments[0] }}
-      </p>
+      <!-- Affichage des réactions -->
+      <div v-if="getReactionForPost(post._id)">
+        <p>Likes: {{ getReactionForPost(post._id).isliked ? 'Oui' : 'Non' }}</p>
+        <p v-if="getReactionForPost(post._id).comments.length > 0">
+          Premier commentaire: {{ getReactionForPost(post._id).comments[0] }}
+        </p>
+      </div>
 
-
+      <!-- Alerte conflit -->
       <div v-if="post._conflicts" style="background: #ffebee; padding: 5px; margin-bottom: 10px;">
         <span style="color:red; font-weight: bold;">⚠️ Conflit détecté ({{ post._conflicts.length }} version(s))</span>
         <button @click="resolveConflict(post._id)" style="margin-left: 10px;">Voir les versions</button>
       </div>
 
+      <!-- Contenu du post -->
       <h3>{{ post.post_name }}</h3>
       <p>{{ post.post_content }}</p>
       <p style="font-size: 0.8em; color: #666;">ID: {{ post._id }}</p>
 
+      <!-- Actions -->
       <div style="margin-top: 10px;">
         <input v-model="documentNewName[index]" placeholder="Nouveau nom" />
         <button @click="updateDocument(post._id, post._rev, index)">Modifier</button>
