@@ -306,6 +306,7 @@ const addReaction = async (post_id: string, comment?: string, isliked?: boolean)
         reaction.isliked = isliked;
       }
       await storage.value.put(reaction);
+      await cleanReaction(post_id); //nettoyage si vide
     } else { // créer une nouvelle réaction    
       const newReaction: Reaction = {
         _id: 'reaction_' + post_id + '_user1',  //ID unique
@@ -352,11 +353,13 @@ const deleteComment = async (post_id: string, comment: string) => {
         comments: reaction.comments.filter(c => c !== comment)
       };
       await storage.value.put(updatedReaction);
+      await cleanReaction(post_id);
       fetchData();
     }
   } catch (err) {
     console.error('Erreur suppression commentaire:', err);
   }
+  
 };
 
 onMounted(() => {
@@ -429,6 +432,7 @@ onMounted(() => {
       <div v-if="getReactionForPost(post._id)"
         style="background: #f9f9f9; padding: 10px; margin: 10px 0; border-radius: 4px;">
         <p style="margin: 0 0 10px 0;">👍 Likes</p>
+        <button @click="addReaction(post._id, undefined, false)">👎 Unlike</button>
 
         <!-- Liste complète des commentaires avec bouton supprimer -->
         <div v-if="getReactionForPost(post._id).comments.length > 0">
