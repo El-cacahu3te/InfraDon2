@@ -6,10 +6,10 @@ PouchDB.plugin(PouchDBFind);
 
 interface Post {
   _id: string
-  _rev: string
+  _rev?: string
   post_name: string
   post_content: string
-  likes?: number
+  total_likes?: number //counter des likes
   comments?: string[]
   attributes?: {
     creation_date: any
@@ -20,9 +20,10 @@ interface Post {
 
 interface Reaction {
   _id: string;           //  reaction_postId
-  _rev: string;         // révision
+  _rev?: string;         // révision
+  user_id: string;      // id de l'utilisateur
   post_id: string;       // lien vers le post
-  isliked: boolean;        // true si like
+  isliked: boolean;        // true si isliked
   comments: string[];    // tableau de commentaires
 }
 
@@ -39,6 +40,8 @@ const selectedConflict = ref<any>(null)
 const otherVersions = ref<any[]>([])
 const buttonName = ref("En ligne")
 const searchTerm = ref('');
+const newComment = ref('');
+const reactionsData = ref<Reaction[]>([]);
 
 let syncHandler: any = null
 
@@ -55,9 +58,21 @@ const initDatabase = () => {
     .catch(err => console.error('Erreur réplication initiale:', err))
 
   storage.value.createIndex({
-    index: { fields: ['post_name'] }
+    index: { fields: ['post_name'] } //index pour la recherche par nom de post
   }).then(() => {
     console.log('Index créé sur post_name');
+  });
+
+  storage.value.createIndex({ //index pour chaque post et user
+    index: { fields: ['post_id', 'user_id'] }
+  }).then(() => {
+    console.log('Index créé sur post_id et user_id');
+  });
+
+  storage.value.createIndex({ //index pour chaque post pour les réactions
+    index: { fields: ['post_id'] }
+  }).then(() => {
+    console.log('Index créé sur post_id');
   });
 }
 
@@ -106,15 +121,20 @@ const fetchData = () => {
   storage.value
     .allDocs({ include_docs: true, conflicts: true })
     .then((result: any) => {
-      postsData.value = result.rows
+      const allDocs = result.rows
         .map((row: any) => row.doc)
         .filter(doc => !doc._id.startsWith('_'))
 
+      postsData.value = allDocs.filter(doc => !doc._id.startsWith('reaction_')) //données post
+      reactionsData.value = allDocs.filter(doc => doc._id.startsWith('reaction_')) //données réactions
+
+      console.log('Posts:', postsData.value.length);
+      console.log('Réactions:', reactionsData.value.length);
       console.log('Documents avec conflits:', postsData.value.filter(p => p._conflicts));
       documentNewName.value = postsData.value.map(post => post.post_name)
     })
     .catch(err => console.error('Erreur récupération:', err))
-}
+};
 
 // Résoudre conflit 
 const resolveConflict = async (id: string) => {
@@ -162,12 +182,27 @@ const keepRemote = async (index: number) => {
   otherVersions.value = [];
 };
 
-
+// Recherche de posts par nom
 const searchPosts = async (term: string) => {
-  const result = await storage.value.find({
-    selector: { post_name: { $regex: term } }
-  });
-  postsData.value = result.docs;
+  if (!term || term.trim() === '') {
+    fetchData();  // Si vide, recharger tout
+    return;
+  }
+
+  try {
+    // l'index sur post_name
+    const result = await storage.value.find({
+      selector: { 
+        post_name: { 
+          $regex: new RegExp(term, 'i')  // 'i' = case insensitive
+        } 
+      }
+    });
+    
+    postsData.value = result.docs.filter(doc => !doc._id.startsWith('reaction_'));
+  } catch (err) {
+    console.error('Erreur recherche:', err);
+  }
 };
 
 // Ajouter un document
@@ -227,30 +262,37 @@ const cancelConflictResolution = () => {
   otherVersions.value = [];
 }
 
-
-const addReaction = async (post_id: string, comment?: string, like?: boolean) => {
-  try {
-    // Chercher si une réaction existe déjà pour ce post
+const addReaction = async (post_id: string, comment?: string, isliked?: boolean) => {
+  try { //indexer pour chaque post et user
     const existing = await storage.value.find({
-      selector: { post_id: post_id, user_id: 'user_1' }
+      selector: {
+        post_id: post_id,
+        user_id: 'user_1'
+      }
     });
 
     if (existing.docs.length > 0) {
+      // Modifier la réaction existante
       const reaction = existing.docs[0];
-      if (comment) reaction.comments.push(comment);
-      if (like !== undefined) reaction.liked = like;
+      if (comment && comment.trim()) {  // conserver uniquement les commentaires non vides
+        reaction.comments.push(comment);
+      }
+      if (isliked !== undefined) {
+        reaction.isliked = isliked;
+      }
       await storage.value.put(reaction);
-    } else {
-      // Créer une nouvelle réaction
+    } else { // créer une nouvelle réaction    
       const newReaction: Reaction = {
-        _id: 'reaction_' + post_id,
+        _id: 'reaction_' + post_id + '_user1',  //ID unique
         post_id,
         user_id: 'user_1',
-        liked: like || false,
-        comments: comment ? [comment] : []
+        isliked: isliked || false,
+        comments: comment && comment.trim() ? [comment] : []
       };
       await storage.value.put(newReaction);
     }
+
+    newComment.value = '';   // reste le champ commentaire
     fetchData();
   } catch (err) {
     console.error('Erreur ajout réaction:', err);
@@ -262,21 +304,34 @@ const cleanReaction = async (post_id: string) => {
   const existing = await storage.value.find({
     selector: { post_id: post_id, user_id: 'user_1' }
   });
-
   if (existing.docs.length > 0) {
     const reaction = existing.docs[0];
-    if (!reaction.liked && reaction.comments.length === 0) {
+    if (!reaction.isliked && reaction.comments.length === 0) {
       await storage.value.remove(reaction._id, reaction._rev);
     }
   }
 };
 
+// Version synchrone pour le template (cherche dans reactionsData déjà chargé)
+const getReactionForPost = (post_id: string) => {
+  return reactionsData.value.find(r => r.post_id === post_id && r.user_id === 'user_1') || null;
+}
+const reactionForPost = async (post_id: string) => { // Renvoie la réaction pour un post donné
+  try {
+    const result = await storage.value.find({
+      selector: { post_id: post_id, user_id: 'user_1' }
+    });
+    return result.docs.length > 0 ? result.docs[0] : null; // Retourne une réaction vide si aucune n'existe
+  } catch (err) {
+    console.error('Erreur récupération réaction:', err);
+    return null;
+  }
+};
 
-
-onMounted(() => {
-  console.log('=> Composant initialisé')
-  initDatabase()
-})
+  onMounted(() => {
+    console.log('=> Composant initialisé')
+    initDatabase()
+  })
 </script>
 
 <template>
@@ -324,13 +379,22 @@ onMounted(() => {
       style="border: 1px solid #ccc; padding: 10px; margin: 10px 0;">
 
       <div>
-        <button @click="addReaction(post._id, null, true)">👍 Like</button>
+        <button @click="addReaction(post._id, null, true)">👍 isliked</button>
         <input v-model="newComment" placeholder="Ajouter un commentaire" />
         <button @click="addReaction(post._id, newComment)">Commenter</button>
       </div>
-      
-<p v-if="reactionForPost(post._id)">Likes: {{ reactionForPost(post._id).liked ? 'Oui' : 'Non' }}</p>
-<p v-if="reactionForPost(post._id).comments.length">Premier commentaire: {{ reactionForPost(post._id).comments[0] }}</p>
+
+      <p v-if="getReactionForPost(post._id)">
+        Likes: {{ getReactionForPost(post._id).isliked ? 'Oui' : 'Non' }}
+      </p>
+      <p v-if="getReactionForPost(post._id) && getReactionForPost(post._id).comments.length">
+        Premier commentaire: {{ getReactionForPost(post._id).comments[0] }}
+      </p>
+      <p v-if="reactionForPost(post._id).comments.length">Premier commentaire: {{ reactionForPost(post._id).comments[0]
+      }}</p>
+      <p v-if="reactionForPost(post._id) && reactionForPost(post._id).comments.length">
+        Premier commentaire: {{ reactionForPost(post._id).comments[0] }}
+      </p>
 
 
       <div v-if="post._conflicts" style="background: #ffebee; padding: 5px; margin-bottom: 10px;">
