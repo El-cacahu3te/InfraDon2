@@ -74,6 +74,12 @@ const initDatabase = () => {
   }).then(() => {
     console.log('Index créé sur post_id');
   });
+
+  storage.value.createIndex({ //index pour trier par total_likes
+    index: { fields: ['total_likes'] }
+  }).then(() => {
+    console.log('Index créé sur total_likes');
+  });
 }
 
 // Rafraîchir (réplication ponctuelle)
@@ -192,16 +198,35 @@ const searchPosts = async (term: string) => {
   try {
     // l'index sur post_name
     const result = await storage.value.find({
-      selector: { 
-        post_name: { 
+      selector: {
+        post_name: {
           $regex: new RegExp(term, 'i')  // 'i' = case insensitive
-        } 
+        }
       }
     });
-    
+
     postsData.value = result.docs.filter(doc => !doc._id.startsWith('reaction_'));
   } catch (err) {
     console.error('Erreur recherche:', err);
+  }
+};
+
+// Récupérer le top 10 des posts les plus likés
+const getTopLikedPosts = async () => {
+  try {
+    // Utilise l'index sur total_likes
+    const result = await storage.value.find({
+      selector: {
+        total_likes: { $gte: 0 }  // Tous les posts avec des likes >= 0
+      },
+      sort: [{ total_likes: 'desc' }],  // Trier par ordre décroissant
+      limit: 10  // Limite à 10 résultats
+    });
+    
+    postsData.value = result.docs.filter(doc => !doc._id.startsWith('reaction_'));
+    console.log('Top 10 posts avec le plus de likes:', postsData.value);
+  } catch (err) {
+    console.error('Erreur récupération top likes:', err);
   }
 };
 
@@ -317,11 +342,27 @@ const getReactionForPost = (post_id: string) => {
   return reactionsData.value.find(r => r.post_id === post_id && r.user_id === 'user_1') || null;
 };
 
+// Supprimer un commentaire spécifique
+const deleteComment = async (post_id: string, comment: string) => {
+  try {
+    const reaction = getReactionForPost(post_id);
+    if (reaction && reaction._rev) {
+      const updatedReaction = {
+        ...reaction,
+        comments: reaction.comments.filter(c => c !== comment)
+      };
+      await storage.value.put(updatedReaction);
+      fetchData();
+    }
+  } catch (err) {
+    console.error('Erreur suppression commentaire:', err);
+  }
+};
 
-  onMounted(() => {
-    console.log('=> Composant initialisé')
-    initDatabase()
-  }); 
+onMounted(() => {
+  console.log('=> Composant initialisé')
+  initDatabase()
+}); 
 </script>
 
 <template>
@@ -334,6 +375,9 @@ const getReactionForPost = (post_id: string) => {
     <button @click="addDocument">Ajouter un document</button>
     <input v-model="documentName" placeholder="Nom du document" />
     <button @click="generateFactory">Générer 50 documents</button>
+    <input v-model="searchTerm" placeholder="Rechercher un post" />
+    <button @click="searchPosts(searchTerm)">Rechercher</button>
+    <button @click="getTopLikedPosts">Top 10 Likes</button>
   </div>
 
   <p v-if="showSyncMessage" style="color: green; font-weight: bold;">
@@ -366,25 +410,10 @@ const getReactionForPost = (post_id: string) => {
     <h2>Documents ({{ postsData.length }})</h2>
 
     <article v-for="(post, index) in postsData" :key="post._id"
-      style="border: 1px solid #ccc; padding: 10px; margin: 10px 0;">
+      style="border: 1px solid #ccc; padding: 15px; margin: 15px 0; border-radius: 8px;">
 
-      <!-- Section réactions -->
-      <div>
-        <button @click="addReaction(post._id, undefined, true)">👍 Like</button>
-        <input v-model="newComment" placeholder="Ajouter un commentaire" />
-        <button @click="addReaction(post._id, newComment)">Commenter</button>
-      </div>
-
-      <!-- Affichage des réactions -->
-      <div v-if="getReactionForPost(post._id)">
-        <p>Likes: {{ getReactionForPost(post._id).isliked ? 'Oui' : 'Non' }}</p>
-        <p v-if="getReactionForPost(post._id).comments.length > 0">
-          Premier commentaire: {{ getReactionForPost(post._id).comments[0] }}
-        </p>
-      </div>
-
-      <!-- Alerte conflit -->
-      <div v-if="post._conflicts" style="background: #ffebee; padding: 5px; margin-bottom: 10px;">
+      <!-- Alerte conflit (en haut) -->
+      <div v-if="post._conflicts" style="background: #ffebee; padding: 10px; margin-bottom: 15px; border-radius: 4px;">
         <span style="color:red; font-weight: bold;">⚠️ Conflit détecté ({{ post._conflicts.length }} version(s))</span>
         <button @click="resolveConflict(post._id)" style="margin-left: 10px;">Voir les versions</button>
       </div>
@@ -394,11 +423,40 @@ const getReactionForPost = (post_id: string) => {
       <p>{{ post.post_content }}</p>
       <p style="font-size: 0.8em; color: #666;">ID: {{ post._id }}</p>
 
-      <!-- Actions -->
-      <div style="margin-top: 10px;">
+      <!-- Section réactions -->
+      <div style="background: #f9f9f9; padding: 10px; margin: 10px 0; border-radius: 4px;">
+        <div>
+          <button @click="addReaction(post._id, undefined, true)">👍 Like</button>
+          <input v-model="newComment" placeholder="Ajouter un commentaire" />
+          <button @click="addReaction(post._id, newComment)">💬 Commenter</button>
+        </div>
+
+        <!-- Affichage des réactions -->
+        <div v-if="getReactionForPost(post._id)" style="margin-top: 10px;">
+          <p>👍 Likes: <strong>{{ getReactionForPost(post._id).isliked ? 'Oui' : 'Non' }}</strong></p>
+          
+          <!-- Liste complète des commentaires avec bouton supprimer -->
+          <div v-if="getReactionForPost(post._id).comments.length > 0">
+            <p><strong>💬 Commentaires ({{ getReactionForPost(post._id).comments.length }}) :</strong></p>
+            <ul style="list-style: none; padding-left: 0;">
+              <li v-for="(c, idx) in getReactionForPost(post._id).comments" :key="idx" 
+                  style="margin: 5px 0; padding: 8px; background: #fff; border: 1px solid #ddd; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
+                <span>{{ c }}</span>
+                <button @click="deleteComment(post._id, c)" 
+                        style="background: #f44336; color: white; padding: 4px 8px; font-size: 0.85em; border: none; border-radius: 3px; cursor: pointer;">
+                  🗑️ Supprimer
+                </button>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actions sur le document -->
+      <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #ddd;">
         <input v-model="documentNewName[index]" placeholder="Nouveau nom" />
-        <button @click="updateDocument(post._id, post._rev, index)">Modifier</button>
-        <button @click="deleteDocument(post._id, post._rev)">Supprimer</button>
+        <button @click="updateDocument(post._id, post._rev, index)">✏️ Modifier</button>
+        <button @click="deleteDocument(post._id, post._rev)" style="background: #f44336; color: white;">🗑️ Supprimer</button>
       </div>
     </article>
   </div>
@@ -409,14 +467,24 @@ button {
   margin: 5px;
   padding: 8px 12px;
   cursor: pointer;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  transition: background 0.2s;
+}
+
+button:hover {
+  background: #e0e0e0;
 }
 
 input {
   margin: 5px;
   padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
 }
 
 article {
-  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 </style>
