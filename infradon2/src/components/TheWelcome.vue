@@ -372,11 +372,14 @@ onMounted(() => {
   <div style="margin-bottom: 20px;">
     <button @click="syncDatabase">Rafraîchir les données</button>
     <button @click="toggleOffline">Vous êtes: {{ buttonName }}</button>
-    <button @click="addDocument">Ajouter un document</button>
+    <br></br>
     <input v-model="documentName" placeholder="Nom du document" />
-    <button @click="generateFactory">Générer 50 documents</button>
+    <button @click="addDocument">Ajouter un document</button>
+    <br></br>
     <input v-model="searchTerm" placeholder="Rechercher un post" />
     <button @click="searchPosts(searchTerm)">Rechercher</button>
+    <br></br>
+    <button @click="generateFactory">Générer 50 documents</button>
     <button @click="getTopLikedPosts">Top 10 Likes</button>
   </div>
 
@@ -425,15 +428,9 @@ onMounted(() => {
 
       <!-- Section réactions -->
       <div style="background: #f9f9f9; padding: 10px; margin: 10px 0; border-radius: 4px;">
-        <div>
-          <button @click="addReaction(post._id, undefined, true)">👍 Like</button>
-          <input v-model="newComment" placeholder="Ajouter un commentaire" />
-          <button @click="addReaction(post._id, newComment)">💬 Commenter</button>
-        </div>
-
-        <!-- Affichage des réactions -->
+         <!-- Affichage des réactions -->
         <div v-if="getReactionForPost(post._id)" style="margin-top: 10px;">
-          <p>👍 Likes: <strong>{{ getReactionForPost(post._id).isliked ? 'Oui' : 'Non' }}</strong></p>
+          <p>👍 Likes </p>
           
           <!-- Liste complète des commentaires avec bouton supprimer -->
           <div v-if="getReactionForPost(post._id).comments.length > 0">
@@ -449,15 +446,22 @@ onMounted(() => {
               </li>
             </ul>
           </div>
+        <div>
+          <button @click="addReaction(post._id, undefined, true)">👍 Like</button>
+          <input v-model="newComment" placeholder="Ajouter un commentaire" />
+          <button @click="addReaction(post._id, newComment)">💬 Commenter</button>
         </div>
-      </div>
-
-      <!-- Actions sur le document -->
+        <!-- Actions sur le document -->
       <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #ddd;">
         <input v-model="documentNewName[index]" placeholder="Nouveau nom" />
         <button @click="updateDocument(post._id, post._rev, index)">✏️ Modifier</button>
         <button @click="deleteDocument(post._id, post._rev)" style="background: #f44336; color: white;">🗑️ Supprimer</button>
       </div>
+       
+        </div>
+      </div>
+
+      
     </article>
   </div>
 </template>
