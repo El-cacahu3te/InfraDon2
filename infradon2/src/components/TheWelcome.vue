@@ -17,6 +17,16 @@ interface Post {
   _conflicts?: string[]
 }
 
+
+interface Reaction {
+  _id: string;           //  reaction_postId
+  _rev: string;         // révision
+  post_id: string;       // lien vers le post
+  isliked: boolean;        // true si like
+  comments: string[];    // tableau de commentaires
+}
+
+
 //Variables réactives
 const documentName = ref('')
 const documentNewName = ref<string[]>([])
@@ -43,7 +53,7 @@ const initDatabase = () => {
     .from('http://elia:admin@localhost:5984/infradon2')
     .then(() => fetchData())
     .catch(err => console.error('Erreur réplication initiale:', err))
-  
+
   storage.value.createIndex({
     index: { fields: ['post_name'] }
   }).then(() => {
@@ -79,14 +89,14 @@ const toggleOffline = () => {
       live: true,
       retry: true
     })
-    .on('change', (info) => {
-      console.log('Changement détecté:', info);
-      fetchData(); // Rafraîchit pour voir les conflits
-    })
-    .on('error', (err) => {
-      console.error('Erreur sync:', err);
-    });
-    
+      .on('change', (info) => {
+        console.log('Changement détecté:', info);
+        fetchData(); // Rafraîchit pour voir les conflits
+      })
+      .on('error', (err) => {
+        console.error('Erreur sync:', err);
+      });
+
     console.log('Mode ONLINE activé')
   }
 }
@@ -99,7 +109,7 @@ const fetchData = () => {
       postsData.value = result.rows
         .map((row: any) => row.doc)
         .filter(doc => !doc._id.startsWith('_'))
-      
+
       console.log('Documents avec conflits:', postsData.value.filter(p => p._conflicts));
       documentNewName.value = postsData.value.map(post => post.post_name)
     })
@@ -111,10 +121,10 @@ const resolveConflict = async (id: string) => {
   const doc = await storage.value.get(id, { conflicts: true });
   console.log('Version active:', doc);
   console.log('Révisions en conflit:', doc._conflicts);
-  
+
   selectedConflict.value = doc;
   otherVersions.value = [];
-  
+
   for (const rev of doc._conflicts) {
     const otherDoc = await storage.value.get(id, { rev });
     otherVersions.value.push(otherDoc);
@@ -133,9 +143,9 @@ const keepLocal = async () => {
 
 const keepRemote = async (index: number) => {
   const chosenVersion = otherVersions.value[index];
-  
+
   // Mettre à jour avec la version distante qui est recréer en local 
-  const  newDoc = {
+  const newDoc = {
     ...selectedConflict.value, //sturcture local
     post_name: chosenVersion.post_name,//contenu distant
     post_content: chosenVersion.post_content,
@@ -146,7 +156,7 @@ const keepRemote = async (index: number) => {
   for (const rev of selectedConflict.value._conflicts) {
     await storage.value.remove(selectedConflict.value._id, rev);
   } //supprimer les autres versions en conflit
-  
+
   fetchData();
   selectedConflict.value = null;
   otherVersions.value = [];
@@ -217,6 +227,52 @@ const cancelConflictResolution = () => {
   otherVersions.value = [];
 }
 
+
+const addReaction = async (post_id: string, comment?: string, like?: boolean) => {
+  try {
+    // Chercher si une réaction existe déjà pour ce post
+    const existing = await storage.value.find({
+      selector: { post_id: post_id, user_id: 'user_1' }
+    });
+
+    if (existing.docs.length > 0) {
+      const reaction = existing.docs[0];
+      if (comment) reaction.comments.push(comment);
+      if (like !== undefined) reaction.liked = like;
+      await storage.value.put(reaction);
+    } else {
+      // Créer une nouvelle réaction
+      const newReaction: Reaction = {
+        _id: 'reaction_' + post_id,
+        post_id,
+        user_id: 'user_1',
+        liked: like || false,
+        comments: comment ? [comment] : []
+      };
+      await storage.value.put(newReaction);
+    }
+    fetchData();
+  } catch (err) {
+    console.error('Erreur ajout réaction:', err);
+  }
+};
+
+
+const cleanReaction = async (post_id: string) => {
+  const existing = await storage.value.find({
+    selector: { post_id: post_id, user_id: 'user_1' }
+  });
+
+  if (existing.docs.length > 0) {
+    const reaction = existing.docs[0];
+    if (!reaction.liked && reaction.comments.length === 0) {
+      await storage.value.remove(reaction._id, reaction._rev);
+    }
+  }
+};
+
+
+
 onMounted(() => {
   console.log('=> Composant initialisé')
   initDatabase()
@@ -242,7 +298,7 @@ onMounted(() => {
   <!-- Zone de résolution des conflits -->
   <div v-if="selectedConflict" style="border: 2px solid red; padding: 20px; margin: 20px 0;">
     <h3>⚠️ Résolution du conflit pour {{ selectedConflict._id }}</h3>
-    
+
     <div style="background: #f0f0f0; padding: 10px; margin: 10px 0;">
       <h4>Version locale (actuelle)</h4>
       <p><strong>Nom:</strong> {{ selectedConflict.post_name }}</p>
@@ -250,8 +306,7 @@ onMounted(() => {
       <button @click="keepLocal()">Garder la version locale</button>
     </div>
 
-    <div v-for="(version, idx) in otherVersions" :key="idx" 
-         style="background: #fff0f0; padding: 10px; margin: 10px 0;">
+    <div v-for="(version, idx) in otherVersions" :key="idx" style="background: #fff0f0; padding: 10px; margin: 10px 0;">
       <h4>Version distante {{ idx + 1 }}</h4>
       <p><strong>Nom:</strong> {{ version.post_name }}</p>
       <p><strong>Contenu:</strong> {{ version.post_content }}</p>
@@ -264,9 +319,20 @@ onMounted(() => {
   <!-- Liste des documents -->
   <div v-if="!selectedConflict">
     <h2>Documents ({{ postsData.length }})</h2>
-    
-    <article v-for="(post, index) in postsData" :key="post._id" 
-             style="border: 1px solid #ccc; padding: 10px; margin: 10px 0;">
+
+    <article v-for="(post, index) in postsData" :key="post._id"
+      style="border: 1px solid #ccc; padding: 10px; margin: 10px 0;">
+
+      <div>
+        <button @click="addReaction(post._id, null, true)">👍 Like</button>
+        <input v-model="newComment" placeholder="Ajouter un commentaire" />
+        <button @click="addReaction(post._id, newComment)">Commenter</button>
+      </div>
+      
+<p v-if="reactionForPost(post._id)">Likes: {{ reactionForPost(post._id).liked ? 'Oui' : 'Non' }}</p>
+<p v-if="reactionForPost(post._id).comments.length">Premier commentaire: {{ reactionForPost(post._id).comments[0] }}</p>
+
+
       <div v-if="post._conflicts" style="background: #ffebee; padding: 5px; margin-bottom: 10px;">
         <span style="color:red; font-weight: bold;">⚠️ Conflit détecté ({{ post._conflicts.length }} version(s))</span>
         <button @click="resolveConflict(post._id)" style="margin-left: 10px;">Voir les versions</button>
@@ -275,7 +341,7 @@ onMounted(() => {
       <h3>{{ post.post_name }}</h3>
       <p>{{ post.post_content }}</p>
       <p style="font-size: 0.8em; color: #666;">ID: {{ post._id }}</p>
-      
+
       <div style="margin-top: 10px;">
         <input v-model="documentNewName[index]" placeholder="Nouveau nom" />
         <button @click="updateDocument(post._id, post._rev, index)">Modifier</button>
