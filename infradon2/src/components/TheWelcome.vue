@@ -252,11 +252,19 @@ const manualSync = async () => {
     }, 3000)
 
     console.log('✅ Synchronisation manuelle terminée')
-  } catch (err) {
+  } catch (err: any) {
     console.error('❌ Erreur synchronisation manuelle:', err)
-    alert('Erreur de synchronisation. Vérifiez la console.')
+
+    // Vérifier si c'est un conflit
+    if (err.status === 409 || (err.result && err.result.some((r: any) => r.error === 'conflict'))) {
+      alert('⚠️ Conflit détecté ! Des documents ont été modifiés simultanément. Utilisez la résolution de conflits.')
+      await fetchData() // Recharger pour voir les conflits
+    } else {
+      alert('❌ Erreur de synchronisation : ' + (err.message || 'Vérifiez la console'))
+    }
   }
 }
+
 
 // ==================== MODE OFFLINE ====================
 const toggleOffline = () => {
@@ -279,12 +287,11 @@ const toggleOffline = () => {
 const fetchData = async () => {
   if (!postsDB.value || !reactionsDB.value) return
   try {
-    // EN MODE ONLINE : synchroniser avant de lire pour avoir les données à jour
     if (!isOffline.value) {
-      console.log('🔄 Sync automatique avant lecture (mode online)...')
-      await postsDB.value.sync(REMOTE_POSTS_URL)
-      await reactionsDB.value.sync(REMOTE_REACTIONS_URL)
-      console.log('✅ Données synchronisées depuis le serveur')
+      console.log('🔄 Récupération changements depuis le serveur...')
+      await postsDB.value.replicate.from(REMOTE_POSTS_URL)
+      await reactionsDB.value.replicate.from(REMOTE_REACTIONS_URL)
+      console.log('✅ Données à jour')
     }
 
     // Récupérer les posts avec détection de conflits
@@ -376,35 +383,30 @@ const keepRemote = async (index: number) => {
   try {
     const chosenVersion = otherVersions.value[index]
 
-    // Mettre à jour avec la version choisie
-    const newDoc: Post = {
-      _id: selectedConflict.value._id,
-      _rev: selectedConflict.value._rev,
-      post_name: chosenVersion.post_name,
-      post_content: chosenVersion.post_content,
-      total_likes: chosenVersion.total_likes,
-      attributes: chosenVersion.attributes
+    // ✅ ÉTAPE 1 : Supprimer la version locale actuelle
+    await postsDB.value.remove(selectedConflict.value._id, selectedConflict.value._rev!)
+
+    // ✅ ÉTAPE 2 : Supprimer les AUTRES versions conflictuelles (pas celle choisie)
+    for (let i = 0; i < otherVersions.value.length; i++) {
+      if (i !== index) {
+        await postsDB.value.remove(otherVersions.value[i]._id, otherVersions.value[i]._rev!)
+      }
     }
 
-    await postsDB.value.put(newDoc)
-
-    // Supprimer les autres versions conflictuelles
-    for (const rev of selectedConflict.value._conflicts) {
-      await postsDB.value.remove(selectedConflict.value._id, rev)
-    }
+    // ✅ ÉTAPE 3 : Recréer le document avec la version choisie (sans _rev)
+    const cleanedVersion = { ...chosenVersion }
+    delete cleanedVersion._rev
+    await postsDB.value.put(cleanedVersion)
 
     await fetchData()
     cancelConflictResolution()
     console.log('✅ Version distante conservée')
   } catch (err) {
     console.error('❌ Erreur keepRemote:', err)
+    alert('Erreur lors de la résolution du conflit. Vérifiez la console.')
   }
 }
 
-const cancelConflictResolution = () => {
-  selectedConflict.value = null
-  otherVersions.value = []
-}
 
 // ==================== RECHERCHE ====================
 const searchPosts = async (term: string) => {
@@ -486,8 +488,22 @@ const updateDocument = async (post: Post, newName: string) => {
 
     await fetchData()
     console.log('✅ Post modifié (sync auto via live sync)')
-  } catch (err) {
-    console.error('❌ Erreur update document:', err)
+    } catch (err: any) {
+    console.error('❌ Erreur updateDocument:', err)
+    
+    if (err.status === 409) {
+      console.warn('⚠️ Conflit 409 détecté')
+      await fetchData()
+      
+      // Vérifier si le post a maintenant des conflits
+      const doc = await postsDB.value.get(post._id, { conflicts: true })
+      if (doc._conflicts && doc._conflicts.length > 0) {
+        alert('⚠️ Ce post a été modifié par quelqu\'un d\'autre. Résolvez le conflit avant de continuer.')
+        await resolveConflict(post._id)
+      }
+    } else {
+      alert('Erreur lors de la modification : ' + (err.message || 'Vérifiez la console'))
+    }
   }
 }
 
@@ -659,8 +675,7 @@ onUnmounted(() => {
     <!-- FORM NOUVEAU POST -->
     <div style="background: #e3f2fd; padding: 15px; margin-bottom: 20px; border-radius: 8px;">
       <h3>➕ Nouveau post</h3>
-      <input v-model="documentName" placeholder="Nom du post"
-        style="width: 100%; margin-bottom: 10px; padding: 8px;" />
+      <input v-model="documentName" placeholder="Nom du post" style="width: 100%; margin-bottom: 10px; padding: 8px;" />
       <textarea v-model="documentContent" placeholder="Contenu du post" rows="3"
         style="width: 100%; margin-bottom: 10px; padding: 8px;"></textarea>
       <button @click="addDocument" :disabled="!documentName.trim()">Créer le post</button>
@@ -697,7 +712,7 @@ onUnmounted(() => {
 
       <article v-for="post in postsData" :key="post._id"
         style="border: 1px solid #ccc; padding: 15px; margin: 15px 0; border-radius: 8px;">
-        
+
         <!-- CONFLICT WARNING -->
         <div v-if="post._conflicts && post._conflicts.length > 0"
           style="background: #ffebee; padding: 10px; margin-bottom: 15px; border-radius: 4px;">
