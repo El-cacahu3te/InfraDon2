@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import HelloWorld from './components/HelloWorld.vue'
 import TheWelcome from './components/TheWelcome.vue'
 </script>
 
 <template>
   <main>
     <TheWelcome />
+    <div id="app">
+    <h1>Mon Application de Posts</h1>
+    <Suspense>
+      <PostList />
+      <template #fallback>
+        <div class="loading">Chargement de l'application...</div>
+      </template>
+    </Suspense>
+  </div>
   </main>
 </template>
 
