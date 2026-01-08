@@ -335,6 +335,12 @@ const fetchData = async () => {
 }
 
 // ==================== GESTION CONFLITS ====================
+
+const cancelConflictResolution = () => {
+  selectedConflict.value = null
+  otherVersions.value = []
+}
+
 const resolveConflict = async (postId: string) => {
   if (!postsDB.value) return
 
@@ -382,67 +388,56 @@ const keepRemote = async (index: number) => {
 
   try {
     const chosenVersion = otherVersions.value[index]
-    
-    console.log('🔄 Résolution conflit : garder version distante')
+
+    console.log('🔄 Garder version distante (index:', index, ')')
     console.log('Version choisie:', chosenVersion)
 
-    // ✅ ÉTAPE 1 : Collecter toutes les révisions à supprimer (SAUF celle choisie)
-    const revsToDelete = [
-      selectedConflict.value._rev!,  // Version locale actuelle
-      ...selectedConflict.value._conflicts.filter((_, i) => i !== index)  // Autres conflits
-    ]
+    // ✅ ÉTAPE 1 : Supprimer la version locale actuelle
+    await postsDB.value.remove(selectedConflict.value._id, selectedConflict.value._rev!)
+    console.log('✅ Version locale supprimée')
 
-    console.log('Révisions à supprimer:', revsToDelete)
-
-    // ✅ ÉTAPE 2 : Supprimer toutes les révisions conflictuelles
-    for (const rev of revsToDelete) {
-      try {
-        await postsDB.value.remove(selectedConflict.value._id, rev)
-        console.log(`✅ Révision ${rev.substring(0, 10)}... supprimée`)
-      } catch (err: any) {
-        // Si 404 = déjà supprimée → OK
-        if (err.status !== 404) {
-          console.error(`❌ Erreur suppression rev ${rev}:`, err)
-          throw err
-        } else {
-          console.log(`⚠️ Révision ${rev.substring(0, 10)}... déjà supprimée (OK)`)
+    // ✅ ÉTAPE 2 : Supprimer TOUS les conflits SAUF celui choisi
+    for (let i = 0; i < otherVersions.value.length; i++) {
+      if (i !== index) {
+        const conflictVersion = otherVersions.value[i]
+        try {
+          await postsDB.value.remove(conflictVersion._id, conflictVersion._rev!)
+          console.log(`✅ Conflit ${i} supprimé`)
+        } catch (err: any) {
+          if (err.status === 404) {
+            console.log(`⚠️ Conflit ${i} déjà supprimé (OK)`)
+          } else {
+            throw err
+          }
         }
       }
     }
 
-    // ✅ ÉTAPE 3 : Récupérer le document après nettoyage
-    const latestDoc = await postsDB.value.get(selectedConflict.value._id)
-    console.log('Document après nettoyage:', latestDoc)
-
-    // ✅ ÉTAPE 4 : Si la version actuelle n'est PAS celle qu'on veut, la remplacer
-    if (latestDoc._rev !== chosenVersion._rev) {
-      console.log('⚠️ Remplacement par la version choisie...')
-      
-      const finalDoc: Post = {
-        _id: latestDoc._id,
-        _rev: latestDoc._rev,
-        post_name: chosenVersion.post_name,
-        post_content: chosenVersion.post_content,
-        total_likes: chosenVersion.total_likes,
-        attributes: chosenVersion.attributes
-      }
-
-      await postsDB.value.put(finalDoc)
-      console.log('✅ Document remplacé')
-    } else {
-      console.log('✅ La version choisie est déjà active')
+    // ✅ ÉTAPE 3 : Recréer le document avec les données de la version CHOISIE
+    const newDoc: Post = {
+      _id: chosenVersion._id,
+      post_name: chosenVersion.post_name,
+      post_content: chosenVersion.post_content,
+      total_likes: chosenVersion.total_likes,
+      attributes: chosenVersion.attributes
     }
+    
+    await postsDB.value.put(newDoc)
+    console.log('✅ Document recréé avec la version choisie')
 
     await fetchData()
-    cancelConflictResolution()
-    console.log('✅ Conflit résolu')
-    alert('✅ Conflit résolu avec succès')
+    selectedConflict.value = null
+    otherVersions.value = []
+    
+    console.log('✅ Version distante conservée')
+    alert('✅ Version distante conservée')
 
   } catch (err: any) {
     console.error('❌ Erreur keepRemote:', err)
-    alert(`❌ Erreur : ${err.message}\nVérifiez la console`)
+    alert(`❌ Erreur : ${err.message}`)
   }
 }
+
 
 // ==================== RECHERCHE ====================
 const searchPosts = async (term: string) => {
