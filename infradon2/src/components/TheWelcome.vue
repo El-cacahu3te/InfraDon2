@@ -136,40 +136,18 @@ const initDatabase = async () => {
     console.error('❌ Erreur index:', err)
   }
 
-  // Réplication POSTS (PouchDB accepte encore le format user:pass@)
-  console.log('🔄 Début réplication POSTS depuis CouchDB...')
-  try {
-    const result = await postsDB.value.replicate.from('http://elia:admin@localhost:5984/post_elia_nicolo')
-    console.log('✅ Réplication POSTS terminée:', result)
-    console.log(`   - ${result.docs_read} docs lus`)
-    console.log(`   - ${result.docs_written} docs écrits`)
-  } catch (err) {
-    console.error('❌ ERREUR RÉPLICATION POSTS:', err)
-  }
+  // Sync initiale one-shot pour charger les données
+console.log('🔄 Synchronisation initiale...')
+try {
+  await postsDB.value.sync('http://elia:admin@localhost:5984/post_elia_nicolo')
+  console.log('✅ Posts synchronisés')
+  
+  await reactionsDB.value.sync('http://elia:admin@localhost:5984/reactions_elia_nicolo')
+  console.log('✅ Reactions synchronisées')
+} catch (err) {
+  console.error('❌ Erreur sync initiale:', err)
+}
 
-  // Réplication REACTIONS
-  console.log('🔄 Début réplication REACTIONS depuis CouchDB...')
-  try {
-    const result = await reactionsDB.value.replicate.from('http://elia:admin@localhost:5984/reactions_elia_nicolo')
-    console.log('✅ Réplication REACTIONS terminée:', result)
-    console.log(`   - ${result.docs_read} docs lus`)
-    console.log(`   - ${result.docs_written} docs écrits`)
-  } catch (err) {
-    console.error('❌ ERREUR RÉPLICATION REACTIONS:', err)
-  }
-
-  // TEST 4 : Combien de docs dans IndexedDB local ?
-  console.log('🔍 Vérification des docs locaux après réplication...')
-  try {
-    const localPosts = await postsDB.value.allDocs({ include_docs: true })
-    console.log(`📦 ${localPosts.total_rows} posts en local après réplication`)
-    console.log('Détails posts locaux:', localPosts.rows)
-    
-    const localReactions = await reactionsDB.value.allDocs({ include_docs: true })
-    console.log(`💬 ${localReactions.total_rows} réactions en local`)
-  } catch (err) {
-    console.error('❌ Erreur lecture locale:', err)
-  }
 
   // Charger les données dans l'UI
   console.log('🎨 Chargement des données dans l\'interface...')
@@ -321,7 +299,7 @@ const keepRemote = async (index: number) => {
   if (!selectedConflict.value || !selectedConflict.value._conflicts || !postsDB.value) return
 
   try {
-    const chosenVersion = otherVersions.value[index]
+    const chosenVersion = otherVersions.value[index] as Post
     
     const newDoc: Post = {
       _id: selectedConflict.value._id,
@@ -559,9 +537,44 @@ const deleteComment = async (postId: string, commentText: string) => {
 }
 
 
-onMounted(() => {
-  initDatabase()
+onMounted(async() => {
+  await initDatabase()
+  startLiveSync()
 })
+
+const toggleOffline = (): void => {
+  isOffline.value = !isOffline.value
+  buttonName.value = isOffline.value ? 'Hors ligne' : 'En ligne'
+
+  if (isOffline.value) {
+    try {
+      if (postsSyncHandler && typeof postsSyncHandler.cancel === 'function') postsSyncHandler.cancel()
+      if (reactionsSyncHandler && typeof reactionsSyncHandler.cancel === 'function') reactionsSyncHandler.cancel()
+      console.log('🔌 Sync arrêté — mode hors ligne')
+    } catch (err) {
+      console.error('❌ Erreur arrêt sync:', err)
+    }
+  } else {
+    // Re-démarrer la sync live
+    startLiveSync()
+    console.log('🌐 Sync redémarrée — mode en ligne')
+  }
+}
+
+const syncDatabase = async (): Promise<void> => {
+  if (!postsDB.value || !reactionsDB.value) return
+
+  try {
+    await postsDB.value.replicate.to('http://elia:admin@localhost:5984/post_elia_nicolo')
+    await reactionsDB.value.replicate.to('http://elia:admin@localhost:5984/reactions_elia_nicolo')
+    showSyncMessage.value = true
+    setTimeout(() => { showSyncMessage.value = false }, 2000)
+    await fetchData()
+    console.log('✅ Synchronisation manuelle terminée')
+  } catch (err) {
+    console.error('❌ Erreur sync manuelle:', err)
+  }
+}
 </script>
 
 <template>
@@ -704,7 +717,7 @@ onMounted(() => {
 
         <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #ddd;">
           <input 
-            :value="post.post_name"
+            v-model="post.post_name"
             placeholder="Nouveau nom" 
             style="width: 60%;"
           />
