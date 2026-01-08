@@ -617,6 +617,7 @@ onUnmounted(() => {
   <div style="padding: 20px; max-width: 800px; margin: 0 auto;">
     <h1>Gestion Posts & Réactions</h1>
 
+    <!-- ZONE BOUTONS + MESSAGES -->
     <div style="background: #f5f5f5; padding: 15px; margin-bottom: 20px; border-radius: 8px;">
       <button @click="manualSync" :disabled="!isOffline" :style="{ opacity: isOffline ? 1 : 0.5 }">
         🔄 Synchroniser manuellement
@@ -647,110 +648,123 @@ onUnmounted(() => {
           ✅ Synchronisation automatique active. Vos modifications sont envoyées en temps réel.
         </span>
       </div>
+    </div>
 
-      <div style="margin-bottom: 20px;">
-        <input v-model="searchTerm" @input="searchPosts(searchTerm)" placeholder="🔍 Rechercher un post..."
-          style="width: 100%; padding: 10px; font-size: 16px;" />
+    <!-- SEARCH -->
+    <div style="margin-bottom: 20px;">
+      <input v-model="searchTerm" @input="searchPosts(searchTerm)" placeholder="🔍 Rechercher un post..."
+        style="width: 100%; padding: 10px; font-size: 16px;" />
+    </div>
+
+    <!-- FORM NOUVEAU POST -->
+    <div style="background: #e3f2fd; padding: 15px; margin-bottom: 20px; border-radius: 8px;">
+      <h3>➕ Nouveau post</h3>
+      <input v-model="documentName" placeholder="Nom du post"
+        style="width: 100%; margin-bottom: 10px; padding: 8px;" />
+      <textarea v-model="documentContent" placeholder="Contenu du post" rows="3"
+        style="width: 100%; margin-bottom: 10px; padding: 8px;"></textarea>
+      <button @click="addDocument" :disabled="!documentName.trim()">Créer le post</button>
+    </div>
+
+    <!-- CONFLICTS RESOLUTION -->
+    <div v-if="selectedConflict" style="background: #fff3cd; padding: 20px; margin-bottom: 20px; border-radius: 8px;">
+      <h2>⚠️ Résolution de conflit</h2>
+
+      <div style="background: #d4edda; padding: 10px; margin: 10px 0; border-radius: 4px;">
+        <h4>Version locale (actuelle)</h4>
+        <p><strong>Nom:</strong> {{ selectedConflict.post_name }}</p>
+        <p><strong>Contenu:</strong> {{ selectedConflict.post_content }}</p>
+        <p><strong>Likes:</strong> {{ selectedConflict.total_likes }}</p>
+        <button @click="keepLocal" style="background: #28a745; color: white;">Garder cette version</button>
       </div>
 
-      <div style="background: #e3f2fd; padding: 15px; margin-bottom: 20px; border-radius: 8px;">
-        <h3>➕ Nouveau post</h3>
-        <input v-model="documentName" placeholder="Nom du post"
-          style="width: 100%; margin-bottom: 10px; padding: 8px;" />
-        <textarea v-model="documentContent" placeholder="Contenu du post" rows="3"
-          style="width: 100%; margin-bottom: 10px; padding: 8px;"></textarea>
-        <button @click="addDocument" :disabled="!documentName.trim()">Créer le post</button>
+      <div v-for="(version, idx) in otherVersions" :key="idx"
+        style="background: #fff0f0; padding: 10px; margin: 10px 0; border-radius: 4px;">
+        <h4>Version distante {{ idx + 1 }}</h4>
+        <p><strong>Nom:</strong> {{ version.post_name }}</p>
+        <p><strong>Contenu:</strong> {{ version.post_content }}</p>
+        <p><strong>Likes:</strong> {{ version.total_likes }}</p>
+        <button @click="keepRemote(idx)" style="background: #dc3545; color: white;">Garder cette version</button>
       </div>
 
-      <div v-if="selectedConflict" style="background: #fff3cd; padding: 20px; margin-bottom: 20px; border-radius: 8px;">
-        <h2>⚠️ Résolution de conflit</h2>
+      <button @click="cancelConflictResolution"
+        style="margin-top: 10px; background: #6c757d; color: white;">Annuler</button>
+    </div>
 
-        <div style="background: #d4edda; padding: 10px; margin: 10px 0; border-radius: 4px;">
-          <h4>Version locale (actuelle)</h4>
-          <p><strong>Nom:</strong> {{ selectedConflict.post_name }}</p>
-          <p><strong>Contenu:</strong> {{ selectedConflict.post_content }}</p>
-          <p><strong>Likes:</strong> {{ selectedConflict.total_likes }}</p>
-          <button @click="keepLocal" style="background: #28a745; color: white;">Garder cette version</button>
+    <!-- POSTS LIST -->
+    <div v-if="!selectedConflict">
+      <h2>📄 Posts ({{ postsData.length }})</h2>
+
+      <article v-for="post in postsData" :key="post._id"
+        style="border: 1px solid #ccc; padding: 15px; margin: 15px 0; border-radius: 8px;">
+        
+        <!-- CONFLICT WARNING -->
+        <div v-if="post._conflicts && post._conflicts.length > 0"
+          style="background: #ffebee; padding: 10px; margin-bottom: 15px; border-radius: 4px;">
+          <span style="color:red; font-weight: bold;">
+            ⚠️ Conflit détecté ({{ post._conflicts.length }} version(s))
+          </span>
+          <button @click="resolveConflict(post._id)" style="margin-left: 10px; background: #ff9800; color: white;">
+            Résoudre le conflit
+          </button>
         </div>
 
-        <div v-for="(version, idx) in otherVersions" :key="idx"
-          style="background: #fff0f0; padding: 10px; margin: 10px 0; border-radius: 4px;">
-          <h4>Version distante {{ idx + 1 }}</h4>
-          <p><strong>Nom:</strong> {{ version.post_name }}</p>
-          <p><strong>Contenu:</strong> {{ version.post_content }}</p>
-          <p><strong>Likes:</strong> {{ version.total_likes }}</p>
-          <button @click="keepRemote(idx)" style="background: #dc3545; color: white;">Garder cette version</button>
-        </div>
+        <!-- POST CONTENT -->
+        <h3>{{ post.post_name }}</h3>
+        <p>{{ post.post_content }}</p>
+        <p style="font-size: 0.85em; color: #666;">
+          💾 ID: {{ post._id }} | 👍 {{ post.total_likes || 0 }} likes
+        </p>
 
-        <button @click="cancelConflictResolution"
-          style="margin-top: 10px; background: #6c757d; color: white;">Annuler</button>
-      </div>
-
-      <div v-if="!selectedConflict">
-        <h2>📄 Posts ({{ postsData.length }})</h2>
-
-        <article v-for="post in postsData" :key="post._id"
-          style="border: 1px solid #ccc; padding: 15px; margin: 15px 0; border-radius: 8px;">
-          <div v-if="post._conflicts && post._conflicts.length > 0"
-            style="background: #ffebee; padding: 10px; margin-bottom: 15px; border-radius: 4px;">
-            <span style="color:red; font-weight: bold;">
-              ⚠️ Conflit détecté ({{ post._conflicts.length }} version(s))
-            </span>
-            <button @click="resolveConflict(post._id)" style="margin-left: 10px; background: #ff9800; color: white;">
-              Résoudre le conflit
-            </button>
-          </div>
-
-          <h3>{{ post.post_name }}</h3>
-          <p>{{ post.post_content }}</p>
-          <p style="font-size: 0.85em; color: #666;">
-            💾 ID: {{ post._id }} | 👍 {{ post.total_likes || 0 }} likes
+        <!-- REACTIONS -->
+        <div v-if="getReactionForPost(post._id)"
+          style="background: #f9f9f9; padding: 10px; margin: 10px 0; border-radius: 4px;">
+          <p v-if="getReactionForPost(post._id)!.isliked"
+            style="margin: 0 0 10px 0; color: #4caf50; font-weight: bold;">
+            ✅ Vous aimez ce post
+          </p>
+          <p v-else style="margin: 0 0 10px 0; color: #999;">
+            Vous n'avez pas liké
           </p>
 
-          <div v-if="getReactionForPost(post._id)"
-            style="background: #f9f9f9; padding: 10px; margin: 10px 0; border-radius: 4px;">
-            <p v-if="getReactionForPost(post._id)!.isliked"
-              style="margin: 0 0 10px 0; color: #4caf50; font-weight: bold;">
-              ✅ Vous aimez ce post
+          <!-- COMMENTS LIST -->
+          <div v-if="getReactionForPost(post._id)!.comments.length > 0">
+            <p style="margin: 10px 0 5px 0;">
+              <strong>💬 Commentaires ({{ getReactionForPost(post._id)!.comments.length }}) :</strong>
             </p>
-            <p v-else style="margin: 0 0 10px 0; color: #999;">
-              Vous n'avez pas liké
-            </p>
-
-            <div v-if="getReactionForPost(post._id)!.comments.length > 0">
-              <p style="margin: 10px 0 5px 0;">
-                <strong>💬 Commentaires ({{ getReactionForPost(post._id)!.comments.length }}) :</strong>
-              </p>
-              <ul style="list-style: none; padding-left: 0; margin: 0;">
-                <li v-for="(c, idx) in getReactionForPost(post._id)!.comments" :key="idx"
-                  style="margin: 5px 0; padding: 8px; background: #fff; border: 1px solid #ddd; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
-                  <span>{{ c }}</span>
-                  <button @click="deleteComment(post._id, c)"
-                    style="background: #f44336; color: white; padding: 4px 8px; font-size: 0.85em; border: none; border-radius: 3px; cursor: pointer;">
-                    🗑️
-                  </button>
-                </li>
-              </ul>
-            </div>
+            <ul style="list-style: none; padding-left: 0; margin: 0;">
+              <li v-for="(c, idx) in getReactionForPost(post._id)!.comments" :key="idx"
+                style="margin: 5px 0; padding: 8px; background: #fff; border: 1px solid #ddd; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
+                <span>{{ c }}</span>
+                <button @click="deleteComment(post._id, c)"
+                  style="background: #f44336; color: white; padding: 4px 8px; font-size: 0.85em; border: none; border-radius: 3px; cursor: pointer;">
+                  🗑️
+                </button>
+              </li>
+            </ul>
           </div>
+        </div>
 
-          <div style="background: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 4px;">
-            <button @click="addReaction(post._id, undefined, true)">👍 Like</button>
-            <button @click="addReaction(post._id, undefined, false)">👎 Unlike</button>
-            <input v-model="newComment" placeholder="Ajouter un commentaire" style="width: 60%; padding: 8px;" />
-            <button @click="addReaction(post._id, newComment)" :disabled="!newComment.trim()">💬 Commenter</button>
-          </div>
+        <!-- REACTION ACTIONS -->
+        <div style="background: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 4px;">
+          <button @click="addReaction(post._id, undefined, true)">👍 Like</button>
+          <button @click="addReaction(post._id, undefined, false)">👎 Unlike</button>
+          <input v-model="newComment" placeholder="Ajouter un commentaire" style="width: 60%; padding: 8px;" />
+          <button @click="addReaction(post._id, newComment)" :disabled="!newComment.trim()">💬 Commenter</button>
+        </div>
 
-          <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #ddd;">
-            <input :value="post.post_name" @change="(e) => updateDocument(post, (e.target as HTMLInputElement).value)"
-              placeholder="Nouveau nom" style="width: 60%; padding: 8px;" />
-            <button @click="deleteDocument(post._id, post._rev)" style="background: #f44336; color: white;">
-              🗑️ Supprimer
-            </button>
-          </div>
-        </article>
-      </div>
+        <!-- POST ACTIONS -->
+        <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #ddd;">
+          <input :value="post.post_name" @change="(e) => updateDocument(post, (e.target as HTMLInputElement).value)"
+            placeholder="Nouveau nom" style="width: 60%; padding: 8px;" />
+          <button @click="deleteDocument(post._id, post._rev)" style="background: #f44336; color: white;">
+            🗑️ Supprimer
+          </button>
+        </div>
+      </article>
     </div>
+
+  </div>
 </template>
 
 <style scoped>
