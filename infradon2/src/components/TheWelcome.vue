@@ -275,7 +275,6 @@ const toggleOffline = () => {
   }
 }
 
-
 // ==================== RÉCUPÉRATION DONNÉES ====================
 const fetchData = async () => {
   if (!postsDB.value || !reactionsDB.value) return
