@@ -15,6 +15,14 @@ interface Post {
     creation_date: string
   }
   _conflicts?: string[]
+  _attachments?: {
+    [key: string]: {
+      content_type: string
+      data?: any
+      stub?: boolean
+      length?: number
+    }
+  }
 }
 
 interface Reaction {
@@ -26,75 +34,77 @@ interface Reaction {
   comments: string[]
 }
 
-// Variables réactives
+// ============ VARIABLES ============
 const documentName = ref('')
 const documentContent = ref('')
+const newPostFile = ref<File | null>(null)
+
 const postsData = ref<Post[]>([])
-const showSyncMessage = ref(false)
-const isOffline = ref(false)
-const selectedConflict = ref<Post | null>(null)
-const otherVersions = ref<Post[]>([])
-const searchTerm = ref('')
-const newComment = ref('')
 const reactionsData = ref<Reaction[]>([])
 
-const postsDB = ref<PouchDB.Database<Post>>()
-const reactionsDB = ref<PouchDB.Database<Reaction>>()
+const showSyncMessage = ref(false)
+const isOffline = ref(false)
 
-// Handlers de sync à nettoyer
+const selectedConflict = ref<Post | null>(null)
+const otherVersions = ref<Post[]>([])
+
+const searchTerm = ref('')
+const newComment = ref('')
+
+// Top likes pagination
+const currentTopPage = ref(0)
+const isTopMode = ref(false)
+
+// Affichage des posts (10 premiers / tous)
+const showAllPosts = ref(false)
+
+// URLs locales pour les médias
+const mediaUrls = ref<Record<string, string>>({})
+
+// Affichage des commentaires (dernier / tous)
+const showAllComments = ref<Record<string, boolean>>({})
+
+// Edition de nom de post (par post_id)
+const editNames = ref<Record<string, string>>({})
+
+const postsDB = ref<PouchDB.Database<Post> | null>(null)
+const reactionsDB = ref<PouchDB.Database<Reaction> | null>(null)
+
 let postsSyncHandler: PouchDB.Replication.Sync<Post> | null = null
 let reactionsSyncHandler: PouchDB.Replication.Sync<Reaction> | null = null
 
-// Configuration
+// ============ CONFIG ============
 const COUCHDB_URL = 'http://localhost:5984'
 const USERNAME = 'elia'
 const PASSWORD = 'admin'
 const POSTS_DB_NAME = 'post_elia_nicolo'
 const REACTIONS_DB_NAME = 'reactions_elia_nicolo'
 
-// URLs complètes avec auth
 const REMOTE_POSTS_URL = `http://${USERNAME}:${PASSWORD}@${COUCHDB_URL.replace('http://', '')}/${POSTS_DB_NAME}`
 const REMOTE_REACTIONS_URL = `http://${USERNAME}:${PASSWORD}@${COUCHDB_URL.replace('http://', '')}/${REACTIONS_DB_NAME}`
 
-// ==================== INITIALISATION ====================
+// ============ INIT DB ============
 const initDatabase = async () => {
   console.log('🔧 Initialisation des bases...')
-
-  // Créer les bases locales
   postsDB.value = new PouchDB<Post>('local_posts')
   reactionsDB.value = new PouchDB<Reaction>('local_reactions')
   console.log('✅ Bases locales créées')
 
-  // Créer les index
   try {
-    await postsDB.value.createIndex({
-      index: { fields: ['post_name'] }
-    })
-    await postsDB.value.createIndex({
-      index: { fields: ['total_likes'] }
-    })
-    await reactionsDB.value.createIndex({
-      index: { fields: ['post_id', 'user_id'] }
-    })
+    await postsDB.value!.createIndex({ index: { fields: ['post_name'] } })
+    await postsDB.value!.createIndex({ index: { fields: ['total_likes'] } })
     console.log('✅ Index créés')
   } catch (err) {
     console.error('❌ Erreur création index:', err)
   }
 
-  // Vérifier la connexion CouchDB
   await checkCouchDBConnection()
-
-  // Synchronisation initiale
   await performInitialSync()
-
-  // Charger les données
   await fetchData()
-
-  // Démarrer le live sync
   startLiveSync()
 }
 
-// ==================== VÉRIFICATION COUCHDB ====================
+// ============ CHECK COUCHDB ============
 const checkCouchDBConnection = async () => {
   console.log('🔍 Test connexion CouchDB...')
 
@@ -107,21 +117,17 @@ const checkCouchDBConnection = async () => {
     throw new Error('Impossible de se connecter à CouchDB')
   }
 
-  // Vérifier les bases
   try {
     const authHeader = 'Basic ' + btoa(`${USERNAME}:${PASSWORD}`)
     const response = await fetch(`${COUCHDB_URL}/_all_dbs`, {
-      headers: { 'Authorization': authHeader }
+      headers: { Authorization: authHeader }
     })
     const dbs = await response.json()
-    console.log('📦 Bases disponibles:', dbs)
 
     if (!dbs.includes(POSTS_DB_NAME)) {
-      console.error(`❌ La base ${POSTS_DB_NAME} n'existe pas`)
       throw new Error(`Base ${POSTS_DB_NAME} manquante`)
     }
     if (!dbs.includes(REACTIONS_DB_NAME)) {
-      console.error(`❌ La base ${REACTIONS_DB_NAME} n'existe pas`)
       throw new Error(`Base ${REACTIONS_DB_NAME} manquante`)
     }
     console.log('✅ Les deux bases existent')
@@ -131,337 +137,418 @@ const checkCouchDBConnection = async () => {
   }
 }
 
-// ==================== SYNCHRONISATION INITIALE ====================
+// ============ SYNC INIT ============
 const performInitialSync = async () => {
   if (!postsDB.value || !reactionsDB.value) return
-
   console.log('🔄 Synchronisation initiale...')
 
   try {
-    // Sync posts
     await postsDB.value.replicate.from(REMOTE_POSTS_URL)
-    console.log('✅ Posts synchronisés depuis le serveur')
-
-    // Sync reactions
     await reactionsDB.value.replicate.from(REMOTE_REACTIONS_URL)
-    console.log('✅ Reactions synchronisées depuis le serveur')
+    console.log('✅ Synchronisation initiale terminée')
   } catch (err) {
-    console.error('❌ Erreur sync initiale:', err)
-    throw err
+    console.error('❌ Erreur synchro initiale:', err)
   }
 }
 
-// ==================== SYNCHRONISATION LIVE ====================
+// ============ LIVE SYNC ============
 const startLiveSync = () => {
-  if (!postsDB.value || !reactionsDB.value) {
-    console.log('⚠️ DBs non initialisées, impossible de démarrer la sync')
-    return
-  }
+  if (!postsDB.value || !reactionsDB.value) return
+  if (isOffline.value) return
 
-  if (isOffline.value) {
-    console.log('⏸️ Mode offline : sync live non démarrée')
-    return
-  }
+  console.log('▶️ Démarrage de la sync live')
 
-  console.log('🔄 Démarrage sync bidirectionnelle live...')
-
-  // Sync POSTS bidirectionnel
   postsSyncHandler = postsDB.value.sync(REMOTE_POSTS_URL, {
     live: true,
     retry: true
   })
-    .on('change', (info) => {
-      console.log('📦 Changement posts:', info.direction, 'docs:', info.change.docs.length)
+    .on('change', () => {
+      console.log('📥 Changement détecté (posts), refresh')
       fetchData()
     })
-    .on('paused', (err) => {
-      if (err) {
-        console.error('❌ Sync posts en pause suite à erreur:', err)
-      } else {
-        console.log('⏸️ Sync posts en pause (à jour)')
-      }
-    })
-    .on('active', () => {
-      console.log('▶️ Sync posts reprise')
-    })
-    .on('error', (err) => {
+    .on('error', (err: any) => {
       console.error('❌ Erreur sync posts:', err)
     })
 
-  // Sync REACTIONS bidirectionnel
   reactionsSyncHandler = reactionsDB.value.sync(REMOTE_REACTIONS_URL, {
     live: true,
     retry: true
   })
-    .on('change', (info) => {
-      console.log('💬 Changement reactions:', info.direction, 'docs:', info.change.docs.length)
+    .on('change', () => {
+      console.log('📥 Changement détecté (reactions), refresh')
       fetchData()
     })
-    .on('paused', (err) => {
-      if (err) {
-        console.error('❌ Sync reactions en pause suite à erreur:', err)
-      } else {
-        console.log('⏸️ Sync reactions en pause (à jour)')
-      }
-    })
-    .on('active', () => {
-      console.log('▶️ Sync reactions reprise')
-    })
-    .on('error', (err) => {
+    .on('error', (err: any) => {
       console.error('❌ Erreur sync reactions:', err)
     })
-
-  console.log('✅ Sync live activée')
 }
 
 const stopLiveSync = () => {
-  if (postsSyncHandler) {
-    postsSyncHandler.cancel()
-    postsSyncHandler = null
-    console.log('🛑 Sync posts arrêtée')
-  }
-  if (reactionsSyncHandler) {
-    reactionsSyncHandler.cancel()
-    reactionsSyncHandler = null
-    console.log('🛑 Sync reactions arrêtée')
-  }
+  console.log('⏹️ Arrêt de la sync live')
+  if (postsSyncHandler) postsSyncHandler.cancel()
+  if (reactionsSyncHandler) reactionsSyncHandler.cancel()
+  postsSyncHandler = null
+  reactionsSyncHandler = null
 }
 
-// ==================== SYNC MANUELLE ====================
-const manualSync = async () => {
-  if (!postsDB.value || !reactionsDB.value) return
-
-  // La sync manuelle n'a de sens qu'en mode offline
-  if (!isOffline.value) {
-    console.log('⚠️ En mode online, la sync est automatique')
-    return
+// ============ FETCH DATA ============
+const refreshEditNames = () => {
+  const map: Record<string, string> = {}
+  for (const p of postsData.value) {
+    map[p._id] = p.post_name
   }
-
-  try {
-    console.log('🔄 Synchronisation manuelle (mode offline)...')
-
-    // Sync bidirectionnelle one-shot
-    await postsDB.value.sync(REMOTE_POSTS_URL)
-    await reactionsDB.value.sync(REMOTE_REACTIONS_URL)
-
-    await fetchData()
-
-    showSyncMessage.value = true
-    setTimeout(() => {
-      showSyncMessage.value = false
-    }, 3000)
-
-    console.log('✅ Synchronisation manuelle terminée')
-  } catch (err: any) {
-    console.error('❌ Erreur synchronisation manuelle:', err)
-
-    // Vérifier si c'est un conflit
-    if (err.status === 409 || (err.result && err.result.some((r: any) => r.error === 'conflict'))) {
-      alert('⚠️ Conflit détecté ! Des documents ont été modifiés simultanément. Utilisez la résolution de conflits.')
-      await fetchData() // Recharger pour voir les conflits
-    } else {
-      alert('❌ Erreur de synchronisation : ' + (err.message || 'Vérifiez la console'))
-    }
-  }
+  editNames.value = map
 }
 
-
-// ==================== MODE OFFLINE ====================
-const toggleOffline = () => {
-  isOffline.value = !isOffline.value
-
-  if (isOffline.value) {
-    stopLiveSync()
-    console.log('🔴 MODE OFFLINE activé')
-    console.log('   → Sync live arrêtée')
-    console.log('   → Utilisez "Synchroniser manuellement" pour envoyer vos changements')
-  } else {
-    startLiveSync()
-    console.log('🟢 MODE ONLINE activé')
-    console.log('   → Sync live démarrée')
-    console.log('   → Vos changements sont propagés automatiquement')
-  }
-}
-
-// ==================== RÉCUPÉRATION DONNÉES ====================
 const fetchData = async () => {
   if (!postsDB.value || !reactionsDB.value) return
+
   try {
-    if (!isOffline.value) {
-      console.log('🔄 Récupération changements depuis le serveur...')
-      await postsDB.value.replicate.from(REMOTE_POSTS_URL)
-      await reactionsDB.value.replicate.from(REMOTE_REACTIONS_URL)
-      console.log('✅ Données à jour')
+    const postsResult = await postsDB.value.allDocs({ include_docs: true })
+    let posts = postsResult.rows
+      .map(r => r.doc)
+      .filter((d): d is Post => !!d)
+
+    // Par défaut : seulement les 10 premiers
+    if (!showAllPosts.value && !isTopMode.value) {
+      posts = posts.slice(0, 10)
     }
 
-    // Récupérer les posts avec détection de conflits
-    const result = await postsDB.value.allDocs({
-      include_docs: true,
-      conflicts: true
-    })
+    postsData.value = posts
+    refreshEditNames()
 
-    postsData.value = result.rows
-      .filter((row) => row.doc && !row.id.startsWith('_design/'))
-      .map((row) => row.doc as Post)
-      .sort((a, b) => {
-        const dateA = a.attributes?.creation_date || ''
-        const dateB = b.attributes?.creation_date || ''
-        return dateB.localeCompare(dateA)
-      })
-
-    // Log les conflits
-    const conflicted = postsData.value.filter(p => p._conflicts && p._conflicts.length > 0)
-    if (conflicted.length > 0) {
-      console.log('⚠️ CONFLITS DÉTECTÉS:', conflicted.map(p => ({
-        id: p._id,
-        name: p.post_name,
-        conflicts: p._conflicts
-      })))
-    }
-
-    // Récupérer les reactions
-    const reactionsResult = await reactionsDB.value.allDocs({
-      include_docs: true
-    })
-
+    const reactionsResult = await reactionsDB.value.allDocs({ include_docs: true })
     reactionsData.value = reactionsResult.rows
-      .filter((row) => row.doc && !row.id.startsWith('_design/'))
-      .map((row) => row.doc as Reaction)
+      .map(r => r.doc)
+      .filter((d): d is Reaction => !!d)
 
-    console.log(`📊 ${postsData.value.length} posts, ${reactionsData.value.length} reactions`)
   } catch (err) {
     console.error('❌ Erreur fetchData:', err)
   }
 }
 
-// ==================== GESTION CONFLITS ====================
+// ============ MODE EN LIGNE / HORS LIGNE ============
+const manualSync = async () => {
+  if (!postsDB.value || !reactionsDB.value) return
 
-const cancelConflictResolution = () => {
-  selectedConflict.value = null
-  otherVersions.value = []
+  try {
+    console.log('🔄 Sync manuelle...')
+    await postsDB.value.replicate.to(REMOTE_POSTS_URL)
+    await reactionsDB.value.replicate.to(REMOTE_REACTIONS_URL)
+    showSyncMessage.value = true
+    setTimeout(() => { showSyncMessage.value = false }, 2000)
+  } catch (err) {
+    console.error('❌ Erreur sync manuelle:', err)
+  }
 }
 
-const resolveConflict = async (postId: string) => {
+const toggleOffline = () => {
+  isOffline.value = !isOffline.value
+  if (isOffline.value) {
+    stopLiveSync()
+  } else {
+    startLiveSync()
+  }
+}
+
+// ============ CRUD POSTS ============
+
+const onNewPostFileChange = (event: Event) => {
+  const input = event.target as HTMLInputElement
+  if (input.files && input.files[0]) {
+    newPostFile.value = input.files[0]
+  } else {
+    newPostFile.value = null
+  }
+}
+
+const addDocument = async () => {
   if (!postsDB.value) return
+  if (!documentName.value.trim()) return
 
-  try {
-    const post = await postsDB.value.get(postId, { conflicts: true })
-
-    if (!post._conflicts || post._conflicts.length === 0) {
-      console.log('Aucun conflit trouvé')
-      return
+  const id = `post_${Date.now()}_${Math.random().toString(16).slice(2)}`
+  const newPost: Post = {
+    _id: id,
+    post_name: documentName.value.trim(),
+    post_content: documentContent.value.trim(),
+    total_likes: 0,
+    comments: [],
+    attributes: {
+      creation_date: new Date().toISOString()
     }
-
-    selectedConflict.value = post
-    otherVersions.value = []
-
-    for (const rev of post._conflicts) {
-      const conflictVersion = await postsDB.value.get(postId, { rev })
-      otherVersions.value.push(conflictVersion)
-    }
-
-    console.log(`⚠️ ${post._conflicts.length} conflit(s) détecté(s)`)
-  } catch (err) {
-    console.error('❌ Erreur résolution conflit:', err)
   }
-}
-
-const keepLocal = async () => {
-  if (!selectedConflict.value || !selectedConflict.value._conflicts || !postsDB.value) return
 
   try {
-    // Supprimer toutes les versions conflictuelles
-    for (const rev of selectedConflict.value._conflicts) {
-      await postsDB.value.remove(selectedConflict.value._id, rev)
+    const res = await postsDB.value.put(newPost)
+    let rev = res.rev
+
+    // Si un fichier est sélectionné, on l'attache tout de suite
+    if (newPostFile.value) {
+      const file = newPostFile.value
+      const attachRes = await postsDB.value.putAttachment(
+        id,
+        'media',
+        rev,
+        file,
+        file.type || 'application/octet-stream'
+      )
+      rev = attachRes.rev
+
+      // URL locale pour prévisualisation
+      mediaUrls.value[id] = URL.createObjectURL(file)
     }
+
+    documentName.value = ''
+    documentContent.value = ''
+    newPostFile.value = null
 
     await fetchData()
-    cancelConflictResolution()
-    console.log('✅ Version locale conservée')
   } catch (err) {
-    console.error('❌ Erreur keepLocal:', err)
+    console.error('❌ Erreur addDocument:', err)
   }
 }
 
-const keepRemote = async (index: number) => {
-  if (!selectedConflict.value || !selectedConflict.value._conflicts || !postsDB.value) return
+const savePostName = async (post: Post) => {
+  if (!postsDB.value) return
+  const newName = editNames.value[post._id]?.trim()
+  if (!newName || newName === post.post_name) return
 
   try {
-    const chosenVersion = otherVersions.value[index]
-
-    console.log('🔄 Garder version distante (index:', index, ')')
-    console.log('Version choisie:', chosenVersion)
-
-    // ✅ ÉTAPE 1 : Supprimer la version locale actuelle
-    await postsDB.value.remove(selectedConflict.value._id, selectedConflict.value._rev!)
-    console.log('✅ Version locale supprimée')
-
-    // ✅ ÉTAPE 2 : Supprimer TOUS les conflits SAUF celui choisi
-    for (let i = 0; i < otherVersions.value.length; i++) {
-      if (i !== index) {
-        const conflictVersion = otherVersions.value[i]
-        try {
-          await postsDB.value.remove(conflictVersion._id, conflictVersion._rev!)
-          console.log(`✅ Conflit ${i} supprimé`)
-        } catch (err: any) {
-          if (err.status === 404) {
-            console.log(`⚠️ Conflit ${i} déjà supprimé (OK)`)
-          } else {
-            throw err
-          }
-        }
-      }
-    }
-
-    // ✅ ÉTAPE 3 : Recréer le document avec les données de la version CHOISIE
-    const newDoc: Post = {
-      _id: chosenVersion._id,
-      post_name: chosenVersion.post_name,
-      post_content: chosenVersion.post_content,
-      total_likes: chosenVersion.total_likes,
-      attributes: chosenVersion.attributes
-    }
-    
-    await postsDB.value.put(newDoc)
-    console.log('✅ Document recréé avec la version choisie')
-
+    const freshPost = await postsDB.value.get(post._id)
+    freshPost.post_name = newName
+    await postsDB.value.put(freshPost)
     await fetchData()
-    selectedConflict.value = null
-    otherVersions.value = []
-    
-    console.log('✅ Version distante conservée')
-    alert('✅ Version distante conservée')
-
-  } catch (err: any) {
-    console.error('❌ Erreur keepRemote:', err)
-    alert(`❌ Erreur : ${err.message}`)
+  } catch (err) {
+    console.error('❌ Erreur savePostName:', err)
   }
 }
 
+const cancelEditPostName = (post: Post) => {
+  editNames.value[post._id] = post.post_name
+}
 
-// ==================== RECHERCHE ====================
+const deleteDocument = async (id: string, rev?: string) => {
+  if (!postsDB.value || !id || !rev) return
+
+  try {
+    await postsDB.value.remove(id, rev)
+    await fetchData()
+  } catch (err) {
+    console.error('❌ Erreur deleteDocument:', err)
+  }
+}
+
+// ============ RECHERCHE ============
 const searchPosts = async (term: string) => {
   if (!postsDB.value) return
 
-  if (!term.trim()) {
+  const trimmed = term.trim()
+  if (!trimmed) {
+    isTopMode.value = false
     await fetchData()
     return
   }
 
   try {
-    const result = await postsDB.value.allDocs({ include_docs: true, conflicts: true })
-    postsData.value = result.rows
-      .map(row => row.doc!)
-      .filter(doc =>
-        !doc._id.startsWith('_design') &&
-        doc.post_name.toLowerCase().includes(term.toLowerCase())
-      )
+    const result = await postsDB.value.find({
+      selector: {
+        post_name: {
+          $gte: trimmed,
+          $lte: trimmed + '\uffff'
+        }
+      }
+    })
+    let docs = result.docs as Post[]
+    if (!showAllPosts.value) {
+      docs = docs.slice(0, 10)
+    }
+    postsData.value = docs
+    isTopMode.value = false
+    refreshEditNames()
   } catch (err) {
-    console.error('❌ Erreur recherche:', err)
+    console.error('❌ Erreur searchPosts:', err)
   }
 }
 
-const getTopLikedPosts = async () => {
+// ============ REACTIONS / COMMENTAIRES ============
+
+const getReactionForPost = (postId: string): Reaction | null => {
+  return (
+    reactionsData.value.find(
+      r => r.post_id === postId && r.user_id === 'user_1'
+    ) || null
+  )
+}
+
+const fetchReactionsOnly = async () => {
+  if (!reactionsDB.value) return
+  const reactionsResult = await reactionsDB.value.allDocs({ include_docs: true })
+  reactionsData.value = reactionsResult.rows
+    .map(r => r.doc)
+    .filter((d): d is Reaction => !!d)
+}
+
+const updateTotalLikes = async (postId: string) => {
+  if (!reactionsDB.value || !postsDB.value) return
+
+  try {
+    const likeResult = await reactionsDB.value.find({
+      selector: {
+        post_id: postId,
+        isliked: true
+      },
+      fields: ['_id']
+    })
+    const likes = likeResult.docs.length
+
+    const post = await postsDB.value.get(postId)
+    post.total_likes = likes
+    await postsDB.value.put(post)
+  } catch (err) {
+    console.error('❌ Erreur updateTotalLikes:', err)
+  }
+}
+
+const addReaction = async (postId: string, comment?: string, isLiked?: boolean) => {
+  if (!reactionsDB.value) return
+
+  try {
+    const existing = getReactionForPost(postId)
+
+    let reaction: Reaction
+    if (existing) {
+      // Recharger depuis la DB pour être sûr d'avoir la dernière _rev
+      const fresh = await reactionsDB.value.get(existing._id)
+      reaction = fresh
+    } else {
+      reaction = {
+        _id: `reaction_${postId}_user_1`,
+        user_id: 'user_1',
+        post_id: postId,
+        isliked: false,
+        comments: []
+      }
+    }
+
+    if (typeof isLiked === 'boolean') {
+      reaction.isliked = isLiked
+    }
+
+    if (comment && comment.trim()) {
+      reaction.comments.push(comment.trim())
+    }
+
+    await reactionsDB.value.put(reaction)
+    newComment.value = ''
+    await fetchReactionsOnly()
+    await updateTotalLikes(postId)
+    await fetchData()
+  } catch (err) {
+    console.error('❌ Erreur addReaction:', err)
+  }
+}
+
+const deleteComment = async (postId: string, comment: string) => {
+  if (!reactionsDB.value) return
+  const existing = getReactionForPost(postId)
+  if (!existing) return
+
+  try {
+    const fresh = await reactionsDB.value.get(existing._id)
+    fresh.comments = fresh.comments.filter(c => c !== comment)
+    await reactionsDB.value.put(fresh)
+    await fetchReactionsOnly()
+    await fetchData()
+  } catch (err) {
+    console.error('❌ Erreur deleteComment:', err)
+  }
+}
+
+const editComment = async (postId: string, oldComment: string) => {
+  if (!reactionsDB.value) return
+  const existing = getReactionForPost(postId)
+  if (!existing) return
+
+  const newText = window.prompt('Modifier le commentaire :', oldComment)
+  if (newText === null) return
+  const trimmed = newText.trim()
+  if (!trimmed) return
+
+  try {
+    const fresh = await reactionsDB.value.get(existing._id)
+    const idx = fresh.comments.indexOf(oldComment)
+    if (idx !== -1) {
+      fresh.comments[idx] = trimmed
+      await reactionsDB.value.put(fresh)
+      await fetchReactionsOnly()
+      await fetchData()
+    }
+  } catch (err) {
+    console.error('❌ Erreur editComment:', err)
+  }
+}
+
+const toggleCommentsView = (postId: string) => {
+  showAllComments.value[postId] = !showAllComments.value[postId]
+}
+
+// ============ FACTORY ============
+const generateFactoryData = async () => {
+  if (!postsDB.value || !reactionsDB.value) return
+
+  try {
+    // coupe la sync live pendant la génération si online
+    const wasOffline = isOffline.value
+    if (!wasOffline) {
+      stopLiveSync()
+    }
+
+    const posts: Post[] = []
+    const reactions: Reaction[] = []
+
+    for (let i = 0; i < 50; i++) {
+      const id = `factory_post_${Date.now()}_${i}_${Math.random().toString(16).slice(2)}`
+      const randomLikes = Math.floor(Math.random() * 51)  
+
+      posts.push({
+        _id: id,
+        post_name: `Post factory #${i + 1}`,
+        post_content: `Contenu généré automatiquement pour le post #${i + 1}`,
+        total_likes: randomLikes,
+        comments: [],
+        attributes: {
+          creation_date: new Date().toISOString()
+        }
+      })
+
+      for (let j = 0; j < randomLikes; j++) {
+        reactions.push({
+          _id: `reaction_${id}_user_${j}`,
+          user_id: `user_${j}`,
+          post_id: id,
+          isliked: true,
+          comments: []
+        })
+      }
+    }
+
+    await postsDB.value.bulkDocs(posts)
+    await reactionsDB.value.bulkDocs(reactions)
+
+    await fetchReactionsOnly()
+    await fetchData()
+
+    // relance la sync live si elle était active au départ
+    if (!wasOffline) {
+      startLiveSync()
+    }
+  } catch (err) {
+    console.error('❌ Erreur generateFactoryData:', err)
+  }
+}
+
+// ============ TOP LIKES ============
+const getTopLikedPosts = async (page = 0) => {
   if (!postsDB.value) return
 
   try {
@@ -469,191 +556,160 @@ const getTopLikedPosts = async () => {
       selector: {
         total_likes: { $gte: 0 }
       },
-      sort: [{ total_likes: 'desc' }],
-      limit: 10
-    })
-    postsData.value = result.docs
-  } catch (err) {
-    console.error('❌ Erreur top likes:', err)
-  }
-}
-
-// ==================== CRUD POSTS ====================
-const addDocument = async () => {
-  if (!postsDB.value || !documentName.value.trim()) return
-
-  try {
-    const newPost: Post = {
-      _id: `post_${Date.now()}`,
-      post_name: documentName.value,
-      post_content: documentContent.value || 'Contenu vide',
-      total_likes: 0,
-      attributes: {
-        creation_date: new Date().toISOString()
-      }
-    }
-
-    await postsDB.value.put(newPost)
-
-    documentName.value = ''
-    documentContent.value = ''
-    await fetchData()
-    console.log('✅ Post créé (sync auto via live sync)')
-  } catch (err) {
-    console.error('❌ Erreur ajout document:', err)
-  }
-}
-
-const updateDocument = async (post: Post, newName: string) => {
-  if (!postsDB.value || !post._rev || !newName.trim()) return
-
-  try {
-    await postsDB.value.put({
-      _id: post._id,
-      _rev: post._rev,
-      post_name: newName,
-      post_content: post.post_content,
-      total_likes: post.total_likes,
-      attributes: post.attributes
+      sort: [{ total_likes: 'desc' as any }],
+      limit: 10,
+      skip: page * 10
     })
 
+    postsData.value = result.docs as Post[]
+    isTopMode.value = true
+    showAllPosts.value = true // en mode top, on ne limite pas à 10 par défaut
+    currentTopPage.value = page
+    refreshEditNames()
+  } catch (err) {
+    console.error('❌ Erreur getTopLikedPosts:', err)
+  }
+}
+
+const prevTopPage = () => {
+  if (currentTopPage.value === 0) return
+  getTopLikedPosts(currentTopPage.value - 1)
+}
+
+const nextTopPage = () => {
+  getTopLikedPosts(currentTopPage.value + 1)
+}
+
+// ============ ATTACHMENTS (MÉDIAS) ============
+const addMedia = async (post: Post, event: Event) => {
+  if (!postsDB.value) return
+  const input = event.target as HTMLInputElement
+  if (!input.files || !input.files[0]) return
+
+  const file = input.files[0]
+
+  try {
+    const freshPost = await postsDB.value.get(post._id)
+    const res = await postsDB.value.putAttachment(
+      freshPost._id,
+      'media',
+      freshPost._rev!,
+      file,
+      file.type || 'application/octet-stream'
+    )
+
+    // mettre à jour la rev localement
+    post._rev = res.rev
+    mediaUrls.value[post._id] = URL.createObjectURL(file)
+
     await fetchData()
-    console.log('✅ Post modifié (sync auto via live sync)')
-    } catch (err: any) {
-    console.error('❌ Erreur updateDocument:', err)
-    
-    if (err.status === 409) {
-      console.warn('⚠️ Conflit 409 détecté')
-      await fetchData()
-      
-      // Vérifier si le post a maintenant des conflits
-      const doc = await postsDB.value.get(post._id, { conflicts: true })
-      if (doc._conflicts && doc._conflicts.length > 0) {
-        alert('⚠️ Ce post a été modifié par quelqu\'un d\'autre. Résolvez le conflit avant de continuer.')
-        await resolveConflict(post._id)
-      }
-    } else {
-      alert('Erreur lors de la modification : ' + (err.message || 'Vérifiez la console'))
+  } catch (err) {
+    console.error('❌ Erreur addMedia:', err)
+  } finally {
+    input.value = ''
+  }
+}
+
+const loadMedia = async (postId: string) => {
+  if (!postsDB.value) return
+
+  try {
+    const blob = await postsDB.value.getAttachment(postId, 'media')
+    const url = URL.createObjectURL(blob as Blob)
+    mediaUrls.value[postId] = url
+  } catch (err) {
+    console.error('❌ Erreur loadMedia:', err)
+  }
+}
+
+const removeMedia = async (post: Post) => {
+  if (!postsDB.value || !post._rev) return
+
+  try {
+    const res = await postsDB.value.removeAttachment(post._id, 'media', post._rev)
+    post._rev = res.rev
+    delete mediaUrls.value[post._id]
+    await fetchData()
+  } catch (err) {
+    console.error('❌ Erreur removeMedia:', err)
+  }
+}
+
+// ============ CONFLITS ============
+const resolveConflict = async (postId: string) => {
+  if (!postsDB.value) return
+
+  try {
+    const doc = await postsDB.value.get(postId, { conflicts: true })
+    selectedConflict.value = doc
+
+    const conflicts = doc._conflicts || []
+    const versions: Post[] = []
+
+    for (const rev of conflicts) {
+      const v = await postsDB.value.get(postId, { rev })
+      versions.push(v)
     }
-  }
-}
-
-const deleteDocument = async (id: string, rev?: string) => {
-  if (!postsDB.value || !rev) return
-
-  try {
-    await postsDB.value.remove(id, rev)
-    await fetchData()
-    console.log('✅ Post supprimé (sync auto via live sync)')
+    otherVersions.value = versions
   } catch (err) {
-    console.error('❌ Erreur suppression document:', err)
+    console.error('❌ Erreur resolveConflict:', err)
   }
 }
 
-// ==================== REACTIONS ====================
-const getReactionForPost = (postId: string): Reaction | null => {
-  return reactionsData.value.find(
-    r => r.post_id === postId && r.user_id === 'user_1'
-  ) || null
-}
-
-const addReaction = async (postId: string, comment?: string, toggleLike?: boolean) => {
-  if (!reactionsDB.value || !postsDB.value) return
-
-  const reactionId = `reaction_${postId}_user_1`
+const keepLocal = async () => {
+  if (!postsDB.value || !selectedConflict.value) return
 
   try {
-    let reaction: Reaction | null = null
+    const doc = selectedConflict.value
+    const conflicts = doc._conflicts || []
 
-    try {
-      reaction = await reactionsDB.value.get(reactionId)
-    } catch (err: any) {
-      if (err.status !== 404) throw err
+    for (const rev of conflicts) {
+      const conflictDoc = await postsDB.value.get(doc._id, { rev })
+      await postsDB.value.remove(conflictDoc._id, conflictDoc._rev!)
     }
 
-    if (reaction) {
-      let updated = false
+    selectedConflict.value = null
+    otherVersions.value = []
+    await fetchData()
+  } catch (err) {
+    console.error('❌ Erreur keepLocal:', err)
+  }
+}
 
-      if (toggleLike !== undefined) {
-        reaction.isliked = toggleLike
-        updated = true
-      }
+const keepRemote = async (idx: number) => {
+  if (!postsDB.value || !selectedConflict.value) return
 
-      if (comment && comment.trim()) {
-        reaction.comments.push(comment.trim())
-        updated = true
-      }
+  try {
+    const chosen = otherVersions.value[idx]
+    const current = await postsDB.value.get(selectedConflict.value._id)
 
-      if (updated) {
-        await reactionsDB.value.put(reaction)
+    chosen._rev = current._rev
+    await postsDB.value.put(chosen)
+
+    const conflicts = current._conflicts || []
+    for (const rev of conflicts) {
+      if (rev !== chosen._rev) {
+        const conflictDoc = await postsDB.value.get(current._id, { rev })
+        await postsDB.value.remove(conflictDoc._id, conflictDoc._rev!)
       }
-    } else {
-      const newReaction: Reaction = {
-        _id: reactionId,
-        user_id: 'user_1',
-        post_id: postId,
-        isliked: toggleLike || false,
-        comments: comment && comment.trim() ? [comment.trim()] : []
-      }
-      await reactionsDB.value.put(newReaction)
     }
 
-    await updateTotalLikes(postId)
-    newComment.value = ''
+    selectedConflict.value = null
+    otherVersions.value = []
     await fetchData()
-    console.log('✅ Réaction ajoutée (sync auto via live sync)')
   } catch (err) {
-    console.error('❌ Erreur ajout réaction:', err)
+    console.error('❌ Erreur keepRemote:', err)
   }
 }
 
-const updateTotalLikes = async (postId: string) => {
-  if (!postsDB.value || !reactionsDB.value) return
-
-  try {
-    const result = await reactionsDB.value.find({
-      selector: {
-        post_id: postId,
-        isliked: true
-      }
-    })
-
-    const likeCount = result.docs.length
-
-    const post = await postsDB.value.get(postId)
-    post.total_likes = likeCount
-    await postsDB.value.put(post)
-
-    console.log(`✅ Post ${postId} : ${likeCount} likes`)
-  } catch (err) {
-    console.error('❌ Erreur mise à jour total_likes:', err)
-  }
+const cancelConflictResolution = () => {
+  selectedConflict.value = null
+  otherVersions.value = []
 }
 
-const deleteComment = async (postId: string, commentText: string) => {
-  if (!reactionsDB.value) return
-
-  const reactionId = `reaction_${postId}_user_1`
-
-  try {
-    const reaction = await reactionsDB.value.get(reactionId)
-    reaction.comments = reaction.comments.filter(c => c !== commentText)
-    await reactionsDB.value.put(reaction)
-    await fetchData()
-    console.log('✅ Commentaire supprimé (sync auto via live sync)')
-  } catch (err) {
-    console.error('❌ Erreur suppression commentaire:', err)
-  }
-}
-
-// ==================== LIFECYCLE ====================
+// ============ LIFECYCLE ============
 onMounted(async () => {
-  try {
-    await initDatabase()
-  } catch (err) {
-    console.error('❌ Erreur initialisation:', err)
-    alert('Erreur d\'initialisation. Vérifiez que CouchDB est démarré et accessible.')
-  }
+  await initDatabase()
 })
 
 onUnmounted(() => {
@@ -670,27 +726,38 @@ onUnmounted(() => {
         🔄 Synchroniser manuellement
       </button>
 
-      <button @click="toggleOffline" :style="{ background: isOffline ? '#f44336' : '#4caf50', color: 'white' }">
+      <button
+        @click="toggleOffline"
+        :style="{ background: isOffline ? '#f44336' : '#4caf50', color: 'white' }"
+      >
         {{ isOffline ? '🔴 Hors ligne' : '🟢 En ligne' }}
       </button>
+
       <button @click="fetchData">🔥 Rafraîchir</button>
-      <button @click="getTopLikedPosts">⭐ Top likes</button>
+
+      <button @click="getTopLikedPosts()">⭐ Top likes</button>
+
+      <button @click="generateFactoryData()">🧪 Générer 50 posts (factory)</button>
 
       <div v-if="showSyncMessage" style="color: green; margin-top: 10px;">
         ✅ Synchronisation réussie
       </div>
 
-      <div v-if="isOffline"
-        style="background: #fff3cd; color: #856404; padding: 10px; margin-top: 10px; border-radius: 4px; font-weight: bold;">
-        🔴 MODE HORS LIGNE<br>
+      <div
+        v-if="isOffline"
+        style="background: #fff3cd; color: #856404; padding: 10px; margin-top: 10px; border-radius: 4px; font-weight: bold;"
+      >
+        🔴 MODE HORS LIGNE<br />
         <span style="font-weight: normal; font-size: 0.9em;">
           ⚠️ Sync automatique désactivée. Cliquez sur "Synchroniser manuellement" pour envoyer vos modifications.
         </span>
       </div>
 
-      <div v-if="!isOffline"
-        style="background: #d4edda; color: #155724; padding: 10px; margin-top: 10px; border-radius: 4px; font-weight: bold;">
-        🟢 MODE EN LIGNE<br>
+      <div
+        v-if="!isOffline"
+        style="background: #d4edda; color: #155724; padding: 10px; margin-top: 10px; border-radius: 4px; font-weight: bold;"
+      >
+        🟢 MODE EN LIGNE<br />
         <span style="font-weight: normal; font-size: 0.9em;">
           ✅ Synchronisation automatique active. Vos modifications sont envoyées en temps réel.
         </span>
@@ -699,17 +766,59 @@ onUnmounted(() => {
 
     <!-- SEARCH -->
     <div style="margin-bottom: 20px;">
-      <input v-model="searchTerm" @input="searchPosts(searchTerm)" placeholder="🔍 Rechercher un post..."
-        style="width: 100%; padding: 10px; font-size: 16px;" />
+      <input
+        v-model="searchTerm"
+        @input="searchPosts(searchTerm)"
+        placeholder="🔍 Rechercher un post..."
+        style="width: 100%; padding: 10px; font-size: 16px;"
+      />
     </div>
 
     <!-- FORM NOUVEAU POST -->
     <div style="background: #e3f2fd; padding: 15px; margin-bottom: 20px; border-radius: 8px;">
       <h3>➕ Nouveau post</h3>
-      <input v-model="documentName" placeholder="Nom du post" style="width: 100%; margin-bottom: 10px; padding: 8px;" />
-      <textarea v-model="documentContent" placeholder="Contenu du post" rows="3"
-        style="width: 100%; margin-bottom: 10px; padding: 8px;"></textarea>
+      <input
+        v-model="documentName"
+        placeholder="Nom du post"
+        style="width: 100%; margin-bottom: 10px; padding: 8px;"
+      />
+      <textarea
+        v-model="documentContent"
+        placeholder="Contenu du post"
+        rows="3"
+        style="width: 100%; margin-bottom: 10px; padding: 8px;"
+      ></textarea>
+
+      <div style="margin-bottom: 10px;">
+        <label><strong>📎 Média (optionnel) :</strong></label><br />
+        <input type="file" @change="onNewPostFileChange" />
+      </div>
+
       <button @click="addDocument" :disabled="!documentName.trim()">Créer le post</button>
+    </div>
+
+    <!-- BOUTON 10 PREMIERS / TOUS (hors mode TOP) -->
+    <div v-if="!isTopMode && postsData.length > 0" style="margin-bottom: 10px;">
+      <button
+        v-if="!showAllPosts"
+        @click="showAllPosts = true; fetchData()"
+      >
+        👀 Voir tous les posts
+      </button>
+      <button
+        v-else
+        @click="showAllPosts = false; fetchData()"
+      >
+        🔙 Voir seulement les 10 premiers posts
+      </button>
+    </div>
+
+    <!-- TOP LIKES PAGINATION -->
+    <div v-if="isTopMode" style="margin-bottom: 10px;">
+      <strong>Vue Top likes (page {{ currentTopPage + 1 }})</strong>
+      <button @click="prevTopPage" :disabled="currentTopPage === 0">⬅️ Page précédente</button>
+      <button @click="nextTopPage">➡️ Page suivante</button>
+      <button @click="isTopMode = false; fetchData()">🔙 Revenir à la vue normale</button>
     </div>
 
     <!-- CONFLICTS RESOLUTION -->
@@ -724,8 +833,11 @@ onUnmounted(() => {
         <button @click="keepLocal" style="background: #28a745; color: white;">Garder cette version</button>
       </div>
 
-      <div v-for="(version, idx) in otherVersions" :key="idx"
-        style="background: #fff0f0; padding: 10px; margin: 10px 0; border-radius: 4px;">
+      <div
+        v-for="(version, idx) in otherVersions"
+        :key="idx"
+        style="background: #fff0f0; padding: 10px; margin: 10px 0; border-radius: 4px;"
+      >
         <h4>Version distante {{ idx + 1 }}</h4>
         <p><strong>Nom:</strong> {{ version.post_name }}</p>
         <p><strong>Contenu:</strong> {{ version.post_content }}</p>
@@ -733,24 +845,35 @@ onUnmounted(() => {
         <button @click="keepRemote(idx)" style="background: #dc3545; color: white;">Garder cette version</button>
       </div>
 
-      <button @click="cancelConflictResolution"
-        style="margin-top: 10px; background: #6c757d; color: white;">Annuler</button>
+      <button
+        @click="cancelConflictResolution"
+        style="margin-top: 10px; background: #6c757d; color: white;"
+      >
+        Annuler
+      </button>
     </div>
 
     <!-- POSTS LIST -->
     <div v-if="!selectedConflict">
       <h2>📄 Posts ({{ postsData.length }})</h2>
 
-      <article v-for="post in postsData" :key="post._id"
-        style="border: 1px solid #ccc; padding: 15px; margin: 15px 0; border-radius: 8px;">
-
+      <article
+        v-for="post in postsData"
+        :key="post._id"
+        style="border: 1px solid #ccc; padding: 15px; margin: 15px 0; border-radius: 8px;"
+      >
         <!-- CONFLICT WARNING -->
-        <div v-if="post._conflicts && post._conflicts.length > 0"
-          style="background: #ffebee; padding: 10px; margin-bottom: 15px; border-radius: 4px;">
+        <div
+          v-if="post._conflicts && post._conflicts.length > 0"
+          style="background: #ffebee; padding: 10px; margin-bottom: 15px; border-radius: 4px;"
+        >
           <span style="color:red; font-weight: bold;">
             ⚠️ Conflit détecté ({{ post._conflicts.length }} version(s))
           </span>
-          <button @click="resolveConflict(post._id)" style="margin-left: 10px; background: #ff9800; color: white;">
+          <button
+            @click="resolveConflict(post._id)"
+            style="margin-left: 10px; background: #ff9800; color: white;"
+          >
             Résoudre le conflit
           </button>
         </div>
@@ -762,30 +885,75 @@ onUnmounted(() => {
           💾 ID: {{ post._id }} | 👍 {{ post.total_likes || 0 }} likes
         </p>
 
-        <!-- REACTIONS -->
-        <div v-if="getReactionForPost(post._id)"
-          style="background: #f9f9f9; padding: 10px; margin: 10px 0; border-radius: 4px;">
-          <p v-if="getReactionForPost(post._id)!.isliked"
-            style="margin: 0 0 10px 0; color: #4caf50; font-weight: bold;">
+        <!-- MÉDIA -->
+        <div style="margin-top: 10px; padding: 10px; border: 1px dashed #ccc; border-radius: 4px;">
+          <p><strong>📎 Média associé :</strong></p>
+
+          <div v-if="post._attachments && post._attachments['media']">
+            <p>Média présent dans le document.</p>
+            <div v-if="mediaUrls[post._id]">
+              <a :href="mediaUrls[post._id]" target="_blank">Ouvrir le média</a>
+            </div>
+            <button @click="loadMedia(post._id)">🔍 Charger / Voir le média</button>
+            <button @click="removeMedia(post)" style="background: #f44336; color: white;">
+              🗑️ Supprimer le média
+            </button>
+          </div>
+
+          <div v-else>
+            <p>Aucun média associé.</p>
+          </div>
+
+          <div style="margin-top: 5px;">
+            <input type="file" @change="(e) => addMedia(post, e)" />
+          </div>
+        </div>
+
+        <!-- REACTIONS + COMMENTAIRES -->
+        <div
+          v-if="getReactionForPost(post._id)"
+          style="background: #f9f9f9; padding: 10px; margin: 10px 0; border-radius: 4px;"
+        >
+          <p
+            v-if="getReactionForPost(post._id)!.isliked"
+            style="margin: 0 0 10px 0; color: #4caf50; font-weight: bold;"
+          >
             ✅ Vous aimez ce post
           </p>
           <p v-else style="margin: 0 0 10px 0; color: #999;">
             Vous n'avez pas liké
           </p>
 
-          <!-- COMMENTS LIST -->
           <div v-if="getReactionForPost(post._id)!.comments.length > 0">
             <p style="margin: 10px 0 5px 0;">
               <strong>💬 Commentaires ({{ getReactionForPost(post._id)!.comments.length }}) :</strong>
+              <button @click="toggleCommentsView(post._id)" style="margin-left: 10px;">
+                {{ showAllComments[post._id] ? 'Voir seulement le dernier' : 'Voir tous les commentaires' }}
+              </button>
             </p>
             <ul style="list-style: none; padding-left: 0; margin: 0;">
-              <li v-for="(c, idx) in getReactionForPost(post._id)!.comments" :key="idx"
-                style="margin: 5px 0; padding: 8px; background: #fff; border: 1px solid #ddd; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
+              <li
+                v-for="(c, idx) in (showAllComments[post._id]
+                  ? getReactionForPost(post._id)!.comments
+                  : [getReactionForPost(post._id)!.comments[getReactionForPost(post._id)!.comments.length - 1]])"
+                :key="idx"
+                style="margin: 5px 0; padding: 8px; background: #fff; border: 1px solid #ddd; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;"
+              >
                 <span>{{ c }}</span>
-                <button @click="deleteComment(post._id, c)"
-                  style="background: #f44336; color: white; padding: 4px 8px; font-size: 0.85em; border: none; border-radius: 3px; cursor: pointer;">
-                  🗑️
-                </button>
+                <div>
+                  <button
+                    @click="editComment(post._id, c)"
+                    style="background: #2196f3; color: white; padding: 4px 8px; font-size: 0.85em; border: none; border-radius: 3px; cursor: pointer; margin-right: 5px;"
+                  >
+                    ✏️
+                  </button>
+                  <button
+                    @click="deleteComment(post._id, c)"
+                    style="background: #f44336; color: white; padding: 4px 8px; font-size: 0.85em; border: none; border-radius: 3px; cursor: pointer;"
+                  >
+                    🗑️
+                  </button>
+                </div>
               </li>
             </ul>
           </div>
@@ -795,23 +963,39 @@ onUnmounted(() => {
         <div style="background: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 4px;">
           <button @click="addReaction(post._id, undefined, true)">👍 Like</button>
           <button @click="addReaction(post._id, undefined, false)">👎 Unlike</button>
-          <input v-model="newComment" placeholder="Ajouter un commentaire" style="width: 60%; padding: 8px;" />
-          <button @click="addReaction(post._id, newComment)" :disabled="!newComment.trim()">💬 Commenter</button>
+          <input
+            v-model="newComment"
+            placeholder="Ajouter un commentaire"
+            style="width: 60%; padding: 8px;"
+          />
+          <button @click="addReaction(post._id, newComment)" :disabled="!newComment.trim()">
+            💬 Commenter
+          </button>
         </div>
 
         <!-- POST ACTIONS -->
         <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #ddd;">
-          <input :value="post.post_name" @change="(e) => updateDocument(post, (e.target as HTMLInputElement).value)"
-            placeholder="Nouveau nom" style="width: 60%; padding: 8px;" />
-          <button @click="deleteDocument(post._id, post._rev)" style="background: #f44336; color: white;">
+          <input
+            v-model="editNames[post._id]"
+            placeholder="Nouveau nom"
+            style="width: 60%; padding: 8px; margin-right: 5px;"
+          />
+          <button @click="savePostName(post)" style="background: #2196f3; color: white;">
+            💾 Enregistrer le nom
+          </button>
+          <button @click="cancelEditPostName(post)" style="margin-left: 5px;">
+            ❌ Annuler
+          </button>
+          <button @click="deleteDocument(post._id, post._rev)" style="background: #f44336; color: white; margin-left: 10px;">
             🗑️ Supprimer
           </button>
         </div>
       </article>
     </div>
-
   </div>
 </template>
+
+
 
 <style scoped>
 button {
