@@ -82,9 +82,42 @@ const REACTIONS_DB_NAME = 'reactions_elia_nicolo'
 
 const REMOTE_POSTS_URL = `http://${USERNAME}:${PASSWORD}@${COUCHDB_URL.replace('http://', '')}/${POSTS_DB_NAME}`
 const REMOTE_REACTIONS_URL = `http://${USERNAME}:${PASSWORD}@${COUCHDB_URL.replace('http://', '')}/${REACTIONS_DB_NAME}`
+// ============ DEBUG INDEXES ============
+const debugIndexes = async () => {
+  if (!postsDB.value) return
+  const idx = await (postsDB.value as any).getIndexes()
+  console.log('📚 Indexes PouchDB :', idx)
+}
+
 
 // ============ INIT DB ============
 const initDatabase = async () => {
+  console.log('🔧 Initialisation des bases...')
+  postsDB.value = new PouchDB<Post>('local_posts')
+  reactionsDB.value = new PouchDB<Reaction>('local_reactions')
+  console.log('✅ Bases locales créées')
+
+  try {
+    await postsDB.value!.createIndex({ index: { fields: ['post_name'] } })
+    await postsDB.value!.createIndex({
+      index: { fields: ['total_likes'] },
+      name: 'idx_total_likes',
+      ddoc: 'idx-total-likes'
+    })
+    console.log('✅ Index créés')
+  } catch (err) {
+    console.error('❌ Erreur création index:', err)
+  }
+
+  await debugIndexes() // 🔍 ICI
+
+  await checkCouchDBConnection()
+  await performInitialSync()
+  await fetchData()
+  startLiveSync()
+}
+
+/*const initDatabase = async () => {
   console.log('🔧 Initialisation des bases...')
   postsDB.value = new PouchDB<Post>('local_posts')
   reactionsDB.value = new PouchDB<Reaction>('local_reactions')
@@ -102,7 +135,7 @@ const initDatabase = async () => {
   await performInitialSync()
   await fetchData()
   startLiveSync()
-}
+} */
 
 // ============ CHECK COUCHDB ============
 const checkCouchDBConnection = async () => {
@@ -204,7 +237,12 @@ const fetchData = async () => {
   if (!postsDB.value || !reactionsDB.value) return
 
   try {
-    const postsResult = await postsDB.value.allDocs({ include_docs: true })
+    const postsResult = await postsDB.value.allDocs({
+  include_docs: true,
+  conflicts : true,
+  attachments: true   // <-- important
+})
+
     let posts = postsResult.rows
       .map(r => r.doc)
       .filter((d): d is Post => !!d)
@@ -215,6 +253,14 @@ const fetchData = async () => {
     }
 
     postsData.value = posts
+        // === Génération des URLs pour les médias existants ===
+    for (const p of postsData.value) {
+      if (p._attachments && p._attachments['media'] && !mediaUrls.value[p._id]) {
+        // On ne met pas `await` ici pour ne pas bloquer tout fetchData
+        loadMedia(p._id)
+      }
+    }
+
     refreshEditNames()
 
     const reactionsResult = await reactionsDB.value.allDocs({ include_docs: true })
@@ -894,7 +940,7 @@ onUnmounted(() => {
             <div v-if="mediaUrls[post._id]">
               <a :href="mediaUrls[post._id]" target="_blank">Ouvrir le média</a>
             </div>
-            <button @click="loadMedia(post._id)">🔍 Charger / Voir le média</button>
+            
             <button @click="removeMedia(post)" style="background: #f44336; color: white;">
               🗑️ Supprimer le média
             </button>
