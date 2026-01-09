@@ -8,7 +8,7 @@ import TheWelcome from './components/TheWelcome.vue'
     <div id="app">
     <h1>Mon Application de Posts</h1>
     <Suspense>
-      <PostList />
+      
       <template #fallback>
         <div class="loading">Chargement de l'application...</div>
       </template>
